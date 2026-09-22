@@ -1,16 +1,25 @@
 BIN_DIR := bin
-BINARY := $(BIN_DIR)/dcgm-compute-agent
+AGENT_BIN := $(BIN_DIR)/dcgm-compute-agent
+CONTROL_BIN := $(BIN_DIR)/dcgm-control-service
 SRC := $(shell find . -name '*.go')
 
-.PHONY: all build test clean vet
+.PHONY: all build build-agent build-control test clean vet
 
 all: test build
 
-build: $(BINARY)
+build: build-agent build-control
 
-$(BINARY): $(SRC)
+build-agent: $(AGENT_BIN)
+
+build-control: $(CONTROL_BIN)
+
+$(AGENT_BIN): $(SRC)
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags "-s -w" -o $(BINARY) ./cmd/dcgm-compute-agent
+	go build -ldflags "-s -w" -o $(AGENT_BIN) ./cmd/dcgm-compute-agent
+
+$(CONTROL_BIN): $(SRC)
+	@mkdir -p $(BIN_DIR)
+	go build -ldflags "-s -w" -o $(CONTROL_BIN) ./cmd/dcgm-control-service
 
 test:
 	go test -v -race ./...
