@@ -102,3 +102,67 @@ DCGM_FI_DEV_GPU_UTIL{gpu="0"} 75
 		t.Errorf("encoded output missing host label: %s", out)
 	}
 }
+
+func TestMetricEnricher_LabelHygieneAndOverrides(t *testing.T) {
+	raw := `
+# HELP DCGM_FI_DEV_GPU_UTIL GPU utilization (in %).
+# TYPE DCGM_FI_DEV_GPU_UTIL gauge
+DCGM_FI_DEV_GPU_UTIL{DCGM_FI_DRIVER_VERSION="610.57.04",UUID="GPU-68800a35",device="nvidia0",gpu="0",host="guest-fake-host",hostname="ducnm10-sv13-ht-3",modelName="NVIDIA GeForce RTX 4090",pci_bus_id="00000000:06:00.0"} 75
+`
+
+	target := api.TargetVM{
+		VMID:      "vm-uuid-1",
+		VMName:    "ducnm10-sv13-ht-3",
+		ProjectID: "proj-abc",
+		GuestIP:   "10.0.0.12",
+	}
+
+	enricher := NewMetricEnricher("ubuntu-sv13")
+	mfs, err := enricher.EnrichTargetMetrics([]byte(raw), target)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	mf := mfs["DCGM_FI_DEV_GPU_UTIL"]
+	if len(mf.Metric) != 1 {
+		t.Fatalf("expected 1 metric, got %d", len(mf.Metric))
+	}
+
+	m := mf.Metric[0]
+	labels := make(map[string]string)
+	for _, lp := range m.Label {
+		labels[lp.GetName()] = lp.GetValue()
+	}
+
+	// 1. Authoritative host override
+	if labels["host"] != "ubuntu-sv13" {
+		t.Errorf("expected host=ubuntu-sv13, got %s", labels["host"])
+	}
+
+	// 2. Default dcgm-exporter hostname is preserved
+	if labels["hostname"] != "ducnm10-sv13-ht-3" {
+		t.Errorf("expected hostname=ducnm10-sv13-ht-3 preserved, got %s", labels["hostname"])
+	}
+
+	// 3. OpenStack VM labels injected
+	if labels["vm_id"] != "vm-uuid-1" {
+		t.Errorf("expected vm_id=vm-uuid-1, got %s", labels["vm_id"])
+	}
+	if labels["vm_name"] != "ducnm10-sv13-ht-3" {
+		t.Errorf("expected vm_name=ducnm10-sv13-ht-3, got %s", labels["vm_name"])
+	}
+
+	// 4. Default dcgm-exporter labels preserved verbatim
+	if labels["DCGM_FI_DRIVER_VERSION"] != "610.57.04" {
+		t.Errorf("expected driver version preserved, got %s", labels["DCGM_FI_DRIVER_VERSION"])
+	}
+	if labels["UUID"] != "GPU-68800a35" {
+		t.Errorf("expected UUID preserved, got %s", labels["UUID"])
+	}
+	if labels["modelName"] != "NVIDIA GeForce RTX 4090" {
+		t.Errorf("expected modelName preserved, got %s", labels["modelName"])
+	}
+	if labels["pci_bus_id"] != "00000000:06:00.0" {
+		t.Errorf("expected pci_bus_id preserved, got %s", labels["pci_bus_id"])
+	}
+}

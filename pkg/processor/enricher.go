@@ -43,28 +43,44 @@ func (e *MetricEnricher) EnrichTargetMetrics(payload []byte, target api.TargetVM
 	return mfs, nil
 }
 
+// HostName returns the configured host name.
+func (e *MetricEnricher) HostName() string {
+	return e.hostName
+}
+
 func (e *MetricEnricher) enrichMetric(m *dto.Metric, target api.TargetVM) {
-	existing := make(map[string]struct{}, len(m.Label))
+	filtered := make([]*dto.LabelPair, 0, len(m.Label)+4)
+	existing := make(map[string]*dto.LabelPair)
+
 	for _, lp := range m.Label {
-		existing[lp.GetName()] = struct{}{}
+		name := lp.GetName()
+		filtered = append(filtered, lp)
+		existing[name] = lp
 	}
 
-	addLabel := func(name, value string) {
+	setOrAddLabel := func(name, value string) {
 		if value == "" {
 			return
 		}
-		if _, ok := existing[name]; !ok {
-			m.Label = append(m.Label, &dto.LabelPair{
+		if lp, ok := existing[name]; ok {
+			// Authoritative override
+			lp.Value = proto.String(value)
+		} else {
+			newLP := &dto.LabelPair{
 				Name:  proto.String(name),
 				Value: proto.String(value),
-			})
+			}
+			filtered = append(filtered, newLP)
+			existing[name] = newLP
 		}
 	}
 
-	addLabel("host", e.hostName)
-	addLabel("vm_id", target.VMID)
-	addLabel("vm_name", target.VMName)
-	addLabel("project_id", target.ProjectID)
+	setOrAddLabel("host", e.hostName)
+	setOrAddLabel("vm_id", target.VMID)
+	setOrAddLabel("vm_name", target.VMName)
+	setOrAddLabel("project_id", target.ProjectID)
+
+	m.Label = filtered
 
 	// Sort labels alphabetically to keep Prometheus output deterministic
 	sort.Slice(m.Label, func(i, j int) bool {

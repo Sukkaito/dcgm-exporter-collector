@@ -13,6 +13,7 @@ import (
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/processor"
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/scraper"
 	dto "github.com/prometheus/client_model/go"
+	"google.golang.org/protobuf/proto"
 )
 
 // Server serves Prometheus telemetry and health endpoints.
@@ -136,6 +137,10 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		processor.MergeFamilies(combinedFamilies, mfs)
 	}
 
+	// Inject collector-level operational metrics (scrape success, latency, target totals)
+	collectorFamilies := s.buildCollectorMetrics(results)
+	processor.MergeFamilies(combinedFamilies, collectorFamilies)
+
 	encoded, err := processor.EncodeMetricFamilies(combinedFamilies)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("encoding metrics failed: %v", err), http.StatusInternalServerError)
@@ -149,4 +154,80 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = w.Write(encoded)
+}
+
+func (s *Server) buildCollectorMetrics(results map[string]scraper.ScrapeResult) map[string]*dto.MetricFamily {
+	host := s.enricher.HostName()
+	families := make(map[string]*dto.MetricFamily)
+
+	successMF := &dto.MetricFamily{
+		Name: proto.String("dcgm_collector_scrape_success"),
+		Help: proto.String("Whether the guest dcgm-exporter scrape was successful (1 for success, 0 for failure)."),
+		Type: dto.MetricType_GAUGE.Enum(),
+	}
+
+	durationMF := &dto.MetricFamily{
+		Name: proto.String("dcgm_collector_scrape_duration_seconds"),
+		Help: proto.String("Scrape duration for the guest dcgm-exporter in seconds."),
+		Type: dto.MetricType_GAUGE.Enum(),
+	}
+
+	healthyCount := 0
+	for _, res := range results {
+		val := 0.0
+		if res.Error == nil {
+			val = 1.0
+			healthyCount++
+		}
+
+		labels := []*dto.LabelPair{
+			{Name: proto.String("host"), Value: proto.String(host)},
+			{Name: proto.String("vm_id"), Value: proto.String(res.Target.VMID)},
+			{Name: proto.String("vm_name"), Value: proto.String(res.Target.VMName)},
+		}
+		if res.Target.ProjectID != "" {
+			labels = append(labels, &dto.LabelPair{Name: proto.String("project_id"), Value: proto.String(res.Target.ProjectID)})
+		}
+
+		successMF.Metric = append(successMF.Metric, &dto.Metric{
+			Label: labels,
+			Gauge: &dto.Gauge{Value: proto.Float64(val)},
+		})
+
+		durationMF.Metric = append(durationMF.Metric, &dto.Metric{
+			Label: labels,
+			Gauge: &dto.Gauge{Value: proto.Float64(res.Latency.Seconds())},
+		})
+	}
+
+	totalMF := &dto.MetricFamily{
+		Name: proto.String("dcgm_collector_targets_total"),
+		Help: proto.String("Total number of GPU passthrough VM targets discovered on this host."),
+		Type: dto.MetricType_GAUGE.Enum(),
+		Metric: []*dto.Metric{
+			{
+				Label: []*dto.LabelPair{{Name: proto.String("host"), Value: proto.String(host)}},
+				Gauge: &dto.Gauge{Value: proto.Float64(float64(len(results)))},
+			},
+		},
+	}
+
+	healthyMF := &dto.MetricFamily{
+		Name: proto.String("dcgm_collector_targets_healthy"),
+		Help: proto.String("Number of healthy GPU passthrough VM targets on this host."),
+		Type: dto.MetricType_GAUGE.Enum(),
+		Metric: []*dto.Metric{
+			{
+				Label: []*dto.LabelPair{{Name: proto.String("host"), Value: proto.String(host)}},
+				Gauge: &dto.Gauge{Value: proto.Float64(float64(healthyCount))},
+			},
+		},
+	}
+
+	families["dcgm_collector_scrape_success"] = successMF
+	families["dcgm_collector_scrape_duration_seconds"] = durationMF
+	families["dcgm_collector_targets_total"] = totalMF
+	families["dcgm_collector_targets_healthy"] = healthyMF
+
+	return families
 }
