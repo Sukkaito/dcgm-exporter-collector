@@ -1,0 +1,17 @@
+{
+  "listen_addr": ":8443",
+  "tls_cert_path": "/etc/dcgm-control-service/certs/server.crt",
+  "tls_key_path": "/etc/dcgm-control-service/certs/server.key",
+  "client_ca_cert_path": "/etc/dcgm-control-service/certs/ca.crt",
+  "auth_url": "https://keystone.internal:5000/v3",
+  "username": "admin",
+  "password": "your-openstack-admin-password",
+  "project_name": "admin",
+  "user_domain_name": "Default",
+  "project_domain_name": "Default",
+  "region": "RegionOne",
+  "extra_specs_key": "pci_passthrough:alias",
+  "extra_specs_keyword": "",
+  "use_mock": false
+}
+
