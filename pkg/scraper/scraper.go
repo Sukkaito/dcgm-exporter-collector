@@ -18,22 +18,28 @@ type ScrapeResult struct {
 	Latency time.Duration
 }
 
-// Scraper coordinates concurrent scraping across all active targets.
+// Scraper coordinates concurrent scraping across all active targets with bounded concurrency.
 type Scraper struct {
 	transport      transport.TelemetryTransport
 	scrapeTimeout  time.Duration
+	maxWorkers     int
 	mu             sync.RWMutex
 	exporterStatus map[string]api.ExporterStatus
 }
 
-// NewScraper creates a new Scraper.
-func NewScraper(tr transport.TelemetryTransport, scrapeTimeout time.Duration) *Scraper {
+// NewScraper creates a new Scraper with an optional maxWorkers limit (default 8).
+func NewScraper(tr transport.TelemetryTransport, scrapeTimeout time.Duration, maxWorkers ...int) *Scraper {
 	if scrapeTimeout <= 0 {
 		scrapeTimeout = 3 * time.Second
+	}
+	workers := 8
+	if len(maxWorkers) > 0 && maxWorkers[0] > 0 {
+		workers = maxWorkers[0]
 	}
 	return &Scraper{
 		transport:      tr,
 		scrapeTimeout:  scrapeTimeout,
+		maxWorkers:     workers,
 		exporterStatus: make(map[string]api.ExporterStatus),
 	}
 }
@@ -55,24 +61,57 @@ func (s *Scraper) ScrapeTarget(ctx context.Context, target api.TargetVM) ScrapeR
 	}
 }
 
-// ScrapeAll scrapes all provided targets concurrently and updates internal health status.
+// ScrapeAll scrapes all provided targets using a bounded worker pool and updates internal health status.
 func (s *Scraper) ScrapeAll(ctx context.Context, targets []api.TargetVM) map[string]ScrapeResult {
 	results := make(map[string]ScrapeResult, len(targets))
+	if len(targets) == 0 {
+		return results
+	}
+
+	workerCount := s.maxWorkers
+	if workerCount <= 0 {
+		workerCount = 8
+	}
+	if workerCount > len(targets) {
+		workerCount = len(targets)
+	}
+
+	targetCh := make(chan api.TargetVM, len(targets))
+	for _, t := range targets {
+		targetCh <- t
+	}
+	close(targetCh)
+
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	for _, t := range targets {
+	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
-		go func(target api.TargetVM) {
+		go func() {
 			defer wg.Done()
-			res := s.ScrapeTarget(ctx, target)
+			for target := range targetCh {
+				if ctx.Err() != nil {
+					res := ScrapeResult{
+						Target:  target,
+						Error:   ctx.Err(),
+						Latency: 0,
+					}
+					mu.Lock()
+					results[target.VMID] = res
+					mu.Unlock()
+					s.recordStatus(res)
+					continue
+				}
 
-			mu.Lock()
-			results[target.VMID] = res
-			mu.Unlock()
+				res := s.ScrapeTarget(ctx, target)
 
-			s.recordStatus(res)
-		}(t)
+				mu.Lock()
+				results[target.VMID] = res
+				mu.Unlock()
+
+				s.recordStatus(res)
+			}
+		}()
 	}
 
 	wg.Wait()

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sukkaito/dcgm-exporter-collector/internal/config"
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/coordinator"
+	"github.com/Sukkaito/dcgm-exporter-collector/pkg/logger"
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/network"
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/processor"
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/scraper"
@@ -18,19 +19,22 @@ import (
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-	log.Println("[main] Starting dcgm-compute-agent...")
-
 	cfg, err := config.Load(os.Args[1:])
 	if err != nil {
-		log.Fatalf("[main] Error loading configuration: %v", err)
+		slog.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
 	}
 
-	log.Printf("[main] Hostname: %s, Controller URL: %s, Listen Addr: %s",
-		cfg.HostName, cfg.ControllerURL, cfg.ListenAddr)
+	logger.InitLogger(cfg.LogFormat, cfg.LogLevel)
+	slog.Info("Starting dcgm-compute-agent",
+		"hostname", cfg.HostName,
+		"controller_url", cfg.ControllerURL,
+		"listen_addr", cfg.ListenAddr,
+		"max_workers", cfg.MaxScrapeWorkers,
+	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// 1. Initialize Network Provisioner subsystem
 	cmdRunner := network.NewExecCommandRunner(10 * time.Second)
@@ -51,12 +55,13 @@ func main() {
 	}
 	coord, err := coordinator.NewCoordinator(coordCfg, netMgr)
 	if err != nil {
-		log.Fatalf("[main] Error initializing coordinator: %v", err)
+		slog.Error("Failed initializing coordinator", "error", err)
+		os.Exit(1)
 	}
 
 	// 3. Initialize Telemetry Collector subsystem
 	tr := transport.NewHTTPTransport(cfg.ScrapeTimeout, 10*1024*1024)
-	sc := scraper.NewScraper(tr, cfg.ScrapeTimeout)
+	sc := scraper.NewScraper(tr, cfg.ScrapeTimeout, cfg.MaxScrapeWorkers)
 	enricher := processor.NewMetricEnricher(cfg.HostName)
 	srv := server.NewServer(cfg.ListenAddr, coord, sc, enricher, cfg.CacheTTL)
 
@@ -66,24 +71,22 @@ func main() {
 	// 5. Start HTTP telemetry server
 	go func() {
 		if err := srv.Start(); err != nil {
-			log.Fatalf("[main] HTTP server error: %v", err)
+			slog.Error("HTTP telemetry server terminated", "error", err)
 		}
 	}()
 
 	// 6. Wait for termination signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	sig := <-sigCh
-	log.Printf("[main] Received signal %v, shutting down gracefully...", sig)
+	<-ctx.Done()
+	stop()
+	slog.Info("Termination signal received, shutting down gracefully...")
 
 	// 7. Graceful shutdown
-	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[main] Error during HTTP server shutdown: %v", err)
+		slog.Error("Error during HTTP server shutdown", "error", err)
 	}
 
-	log.Println("[main] dcgm-compute-agent exited cleanly")
+	slog.Info("dcgm-compute-agent exited cleanly")
 }

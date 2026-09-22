@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/api"
 	dto "github.com/prometheus/client_model/go"
@@ -101,9 +102,18 @@ func MergeFamilies(dest, src map[string]*dto.MetricFamily) {
 	}
 }
 
+var bufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
+
 // EncodeMetricFamilies converts a map of metric families into Prometheus text format bytes.
 func EncodeMetricFamilies(mfs map[string]*dto.MetricFamily) ([]byte, error) {
-	var buf bytes.Buffer
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufferPool.Put(buf)
+
 	// Sort metric names for deterministic Prometheus exposition
 	names := make([]string, 0, len(mfs))
 	for name := range mfs {
@@ -113,10 +123,12 @@ func EncodeMetricFamilies(mfs map[string]*dto.MetricFamily) ([]byte, error) {
 
 	for _, name := range names {
 		mf := mfs[name]
-		if _, err := expfmt.MetricFamilyToText(&buf, mf); err != nil {
+		if _, err := expfmt.MetricFamilyToText(buf, mf); err != nil {
 			return nil, fmt.Errorf("encoding metric family %s: %w", name, err)
 		}
 	}
 
-	return buf.Bytes(), nil
+	res := make([]byte, buf.Len())
+	copy(res, buf.Bytes())
+	return res, nil
 }

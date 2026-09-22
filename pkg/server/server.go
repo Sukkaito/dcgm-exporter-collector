@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -70,7 +70,7 @@ func (s *Server) Handler() http.Handler {
 
 // Start begins serving HTTP requests.
 func (s *Server) Start() error {
-	log.Printf("[server] Starting telemetry server on %s", s.addr)
+	slog.Info("Starting telemetry server", "addr", s.addr)
 	if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return fmt.Errorf("http server failed: %w", err)
 	}
@@ -79,7 +79,7 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully stops the HTTP server.
 func (s *Server) Shutdown(ctx context.Context) error {
-	log.Printf("[server] Shutting down telemetry server")
+	slog.Info("Shutting down telemetry server")
 	return s.httpServer.Shutdown(ctx)
 }
 
@@ -131,7 +131,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 		mfs, err := s.enricher.EnrichTargetMetrics(res.Payload, res.Target)
 		if err != nil {
-			log.Printf("[server] Error enriching metrics for vm %s: %v", res.Target.VMID, err)
+			slog.Error("Error enriching metrics", "vm_id", res.Target.VMID, "error", err)
 			continue
 		}
 		processor.MergeFamilies(combinedFamilies, mfs)

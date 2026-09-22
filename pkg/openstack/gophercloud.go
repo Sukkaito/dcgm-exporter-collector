@@ -3,7 +3,7 @@ package openstack
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -34,6 +34,11 @@ func NewGophercloudClient(ctx context.Context, authOpts gophercloud.AuthOptions,
 	provider, err := openstack.AuthenticatedClient(ctx, authOpts)
 	if err != nil {
 		return nil, fmt.Errorf("keystone authentication failed: %w", err)
+	}
+
+	// Automatically renew Keystone token on expiration (401 response)
+	provider.ReauthFunc = func(ctx context.Context) error {
+		return openstack.Authenticate(ctx, provider, authOpts)
 	}
 
 	computeClient, err := openstack.NewComputeV2(provider, endpointOpts)
@@ -92,7 +97,7 @@ func (c *GophercloudClient) DiscoverComputeVMs(ctx context.Context, computeHost 
 		// 1. Check if VM matches GPU passthrough criteria
 		hasGPU, err := c.serverHasGPUPassthrough(ctx, s)
 		if err != nil {
-			log.Printf("[openstack] Warning: checking GPU passthrough for server %s: %v", s.ID, err)
+			slog.Warn("Checking GPU passthrough failed", "server_id", s.ID, "error", err)
 			continue
 		}
 		if !hasGPU {
@@ -105,12 +110,12 @@ func (c *GophercloudClient) DiscoverComputeVMs(ctx context.Context, computeHost 
 		}
 		portPages, err := ports.List(c.networkClient, portListOpts).AllPages(ctx)
 		if err != nil {
-			log.Printf("[openstack] Warning: listing ports for server %s: %v", s.ID, err)
+			slog.Warn("Listing ports failed", "server_id", s.ID, "error", err)
 			continue
 		}
 		serverPorts, err := ports.ExtractPorts(portPages)
 		if err != nil {
-			log.Printf("[openstack] Warning: extracting ports for server %s: %v", s.ID, err)
+			slog.Warn("Extracting ports failed", "server_id", s.ID, "error", err)
 			continue
 		}
 
@@ -129,7 +134,7 @@ func (c *GophercloudClient) DiscoverComputeVMs(ctx context.Context, computeHost 
 		}
 
 		if guestIP == "" {
-			log.Printf("[openstack] Server %s (%s) has no IPv4 address, skipping", s.ID, s.Name)
+			slog.Debug("Server has no IPv4 address, skipping", "server_id", s.ID, "server_name", s.Name)
 			continue
 		}
 
@@ -249,7 +254,7 @@ func (c *GophercloudClient) EnsureHostPorts(ctx context.Context, computeHost str
 				return nil, fmt.Errorf("creating host port %s on network %s: %w", portName, netID, err)
 			}
 			port = created
-			log.Printf("[openstack] Created host port %s (id: %s) on network %s bound to %s", portName, port.ID, netID, computeHost)
+			slog.Info("Created host port", "port_name", portName, "port_id", port.ID, "network_id", netID, "host", computeHost)
 		}
 
 		// 3. Format CIDR IP address

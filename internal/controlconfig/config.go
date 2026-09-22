@@ -32,6 +32,10 @@ type Config struct {
 
 	// Mock mode for local testing
 	UseMock bool `json:"use_mock"`
+
+	// Logging
+	LogFormat string `json:"log_format"`
+	LogLevel  string `json:"log_level"`
 }
 
 // Load loads configuration from flags, environment variables, and optional JSON file.
@@ -56,6 +60,8 @@ func Load(args []string) (*Config, error) {
 	extraSpecsKeyword := fs.String("extra-specs-keyword", getEnv("DCGM_EXTRA_SPECS_KEYWORD", ""), "Flavor extra specs keyword (empty matches any GPU alias)")
 
 	useMock := fs.Bool("use-mock", getEnvBool("DCGM_USE_MOCK_OPENSTACK", false), "Enable mock OpenStack client for local testing")
+	logFormat := fs.String("log-format", getEnv("DCGM_LOG_FORMAT", "text"), "Log format (text or json)")
+	logLevel := fs.String("log-level", getEnv("DCGM_LOG_LEVEL", "info"), "Log level (debug, info, warn, error)")
 
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -76,6 +82,8 @@ func Load(args []string) (*Config, error) {
 		ExtraSpecsKey:     *extraSpecsKey,
 		ExtraSpecsKeyword: *extraSpecsKeyword,
 		UseMock:           *useMock,
+		LogFormat:         *logFormat,
+		LogLevel:          *logLevel,
 	}
 
 	if *cfgFile != "" {
