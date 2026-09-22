@@ -3,7 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/api"
@@ -56,14 +56,14 @@ func (m *NetworkManager) ReconcileEndpoints(ctx context.Context, endpoints []api
 		}
 
 		desired[hostIf] = ep
-		log.Printf("[network] Reconciled endpoint host_if=%s ovs_if=%s port_id=%s ip=%s", hostIf, ovsIf, ep.PortID, ep.IP)
+		slog.Info("Reconciled endpoint", "host_if", hostIf, "ovs_if", ovsIf, "port_id", ep.PortID, "ip", ep.IP)
 	}
 
 	// Clean up stale endpoints that were previously active but are no longer desired
 	for hostIf, oldEp := range m.activeVeths {
 		if _, stillDesired := desired[hostIf]; !stillDesired {
 			ovsIf := fmt.Sprintf("%s-ovs", oldEp.VethName)
-			log.Printf("[network] Removing obsolete endpoint host_if=%s ovs_if=%s", hostIf, ovsIf)
+			slog.Info("Removing obsolete endpoint", "host_if", hostIf, "ovs_if", ovsIf)
 			_ = m.ovs.DeletePort(ctx, m.bridge, ovsIf)
 			_ = m.veth.DeleteVethPair(ctx, hostIf)
 		}
@@ -80,7 +80,7 @@ func (m *NetworkManager) Cleanup(ctx context.Context) {
 
 	for hostIf, ep := range m.activeVeths {
 		ovsIf := fmt.Sprintf("%s-ovs", ep.VethName)
-		log.Printf("[network] Cleanup deleting host_if=%s ovs_if=%s", hostIf, ovsIf)
+		slog.Info("Cleanup deleting endpoint", "host_if", hostIf, "ovs_if", ovsIf)
 		_ = m.ovs.DeletePort(ctx, m.bridge, ovsIf)
 		_ = m.veth.DeleteVethPair(ctx, hostIf)
 	}

@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"sync"
@@ -156,7 +156,7 @@ func (c *Coordinator) SyncOnce(ctx context.Context) error {
 	// Reconcile network endpoints if network manager is configured
 	if c.networkManager != nil && len(syncResp.Endpoints) > 0 {
 		if err := c.networkManager.ReconcileEndpoints(ctx, syncResp.Endpoints); err != nil {
-			log.Printf("[coordinator] Warning: network reconciliation error: %v", err)
+			slog.Warn("Network reconciliation warning", "error", err)
 		}
 	}
 
@@ -166,7 +166,7 @@ func (c *Coordinator) SyncOnce(ctx context.Context) error {
 	c.lastError = nil
 	c.mu.Unlock()
 
-	log.Printf("[coordinator] Sync complete: %d endpoints, %d targets", len(syncResp.Endpoints), len(syncResp.Targets))
+	slog.Info("Sync complete", "endpoints", len(syncResp.Endpoints), "targets", len(syncResp.Targets))
 	return nil
 }
 
@@ -183,17 +183,17 @@ func (c *Coordinator) Start(ctx context.Context) {
 
 	// Initial sync immediately
 	if err := c.SyncOnce(ctx); err != nil {
-		log.Printf("[coordinator] Initial sync failed: %v", err)
+		slog.Warn("Initial sync failed", "error", err)
 	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("[coordinator] Stopping sync loop")
+			slog.Info("Stopping sync loop")
 			return
 		case <-ticker.C:
 			if err := c.SyncOnce(ctx); err != nil {
-				log.Printf("[coordinator] Periodic sync failed: %v", err)
+				slog.Warn("Periodic sync failed", "error", err)
 			}
 		}
 	}

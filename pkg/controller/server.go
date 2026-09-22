@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"time"
@@ -79,7 +79,7 @@ func (s *Server) Handler() http.Handler {
 
 // Start runs the server (using TLS if certs provided).
 func (s *Server) Start() error {
-	log.Printf("[controller] Starting control service on %s (TLS: %v)", s.addr, s.useTLS)
+	slog.Info("Starting control service", "addr", s.addr, "tls", s.useTLS)
 	if s.useTLS {
 		if err := s.httpServer.ListenAndServeTLS(s.certFile, s.keyFile); err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("https server failed: %w", err)
@@ -95,6 +95,6 @@ func (s *Server) Start() error {
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
-	log.Printf("[controller] Shutting down control service")
+	slog.Info("Shutting down control service")
 	return s.httpServer.Shutdown(ctx)
 }

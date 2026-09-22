@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,33 +10,37 @@ import (
 
 	"github.com/Sukkaito/dcgm-exporter-collector/internal/controlconfig"
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/controller"
+	"github.com/Sukkaito/dcgm-exporter-collector/pkg/logger"
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/openstack"
 	"github.com/gophercloud/gophercloud/v2"
 )
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
-	log.Println("[main] Starting dcgm-control-service...")
-
 	cfg, err := controlconfig.Load(os.Args[1:])
 	if err != nil {
-		log.Fatalf("[main] Error loading configuration: %v", err)
+		slog.Error("Failed to load configuration", "error", err)
+		os.Exit(1)
 	}
 
-	log.Printf("[main] Listen Addr: %s, Auth URL: %s, Mock Mode: %v",
-		cfg.ListenAddr, cfg.AuthURL, cfg.UseMock)
+	logger.InitLogger(cfg.LogFormat, cfg.LogLevel)
+	slog.Info("Starting dcgm-control-service",
+		"listen_addr", cfg.ListenAddr,
+		"auth_url", cfg.AuthURL,
+		"mock_mode", cfg.UseMock,
+	)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// 1. Initialize OpenStack Client
 	var osClient openstack.OpenStackClient
 	if cfg.UseMock {
-		log.Println("[main] Running in Mock OpenStack mode")
+		slog.Info("Running in Mock OpenStack mode")
 		osClient = openstack.NewMockOpenStackClient()
 	} else {
 		if cfg.AuthURL == "" {
-			log.Fatalf("[main] OS_AUTH_URL is required when not in mock mode. Run with -use-mock for local testing.")
+			slog.Error("OS_AUTH_URL is required when not in mock mode. Run with -use-mock for local testing.")
+			os.Exit(1)
 		}
 
 		endpointOpts := gophercloud.EndpointOpts{
@@ -44,7 +48,8 @@ func main() {
 		}
 		client, err := openstack.NewGophercloudClient(ctx, cfg.ToAuthOptions(), endpointOpts, cfg.ToVMFilterConfig())
 		if err != nil {
-			log.Fatalf("[main] Error connecting to OpenStack: %v", err)
+			slog.Error("Failed connecting to OpenStack", "error", err)
+			os.Exit(1)
 		}
 		osClient = client
 	}
@@ -53,30 +58,29 @@ func main() {
 	handler := controller.NewHandler(osClient)
 	srv, err := controller.NewServer(cfg.ListenAddr, handler, cfg.TLSCertPath, cfg.TLSKeyPath, cfg.ClientCACertPath)
 	if err != nil {
-		log.Fatalf("[main] Error creating HTTPS server: %v", err)
+		slog.Error("Failed creating HTTPS server", "error", err)
+		os.Exit(1)
 	}
 
 	// 3. Start HTTPS Server
 	go func() {
 		if err := srv.Start(); err != nil {
-			log.Fatalf("[main] HTTPS server failed: %v", err)
+			slog.Error("HTTPS server terminated", "error", err)
 		}
 	}()
 
-	// 4. Handle termination signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	sig := <-sigCh
-	log.Printf("[main] Received signal %v, shutting down gracefully...", sig)
+	// 4. Wait for termination signals
+	<-ctx.Done()
+	stop()
+	slog.Info("Termination signal received, shutting down gracefully...")
 
 	// 5. Graceful shutdown
-	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("[main] Error during shutdown: %v", err)
+		slog.Error("Error during shutdown", "error", err)
 	}
 
-	log.Println("[main] dcgm-control-service exited cleanly")
+	slog.Info("dcgm-control-service exited cleanly")
 }

@@ -4,7 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -37,17 +37,17 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 
 	computeHost, err := h.extractComputeHost(r)
 	if err != nil {
-		log.Printf("[controller] Unauthorized sync attempt: %v", err)
+		slog.Warn("Unauthorized sync attempt", "error", err)
 		http.Error(w, fmt.Sprintf("Unauthorized: %v", err), http.StatusUnauthorized)
 		return
 	}
 
-	log.Printf("[controller] Handling sync request for authenticated host: %s", computeHost)
+	slog.Info("Handling sync request for host", "host", computeHost)
 
 	// 1. Discover GPU passthrough VMs for the compute host
 	targets, err := h.osClient.DiscoverComputeVMs(r.Context(), computeHost)
 	if err != nil {
-		log.Printf("[controller] Error discovering VMs on %s: %v", computeHost, err)
+		slog.Error("Error discovering VMs", "host", computeHost, "error", err)
 		http.Error(w, fmt.Sprintf("Failed to discover VMs: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -66,7 +66,7 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 
 	endpoints, err := h.osClient.EnsureHostPorts(r.Context(), computeHost, networkList)
 	if err != nil {
-		log.Printf("[controller] Error ensuring host ports for %s: %v", computeHost, err)
+		slog.Error("Error ensuring host ports", "host", computeHost, "error", err)
 		http.Error(w, fmt.Sprintf("Failed to ensure host ports: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -80,7 +80,7 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		log.Printf("[controller] Error encoding sync response: %v", err)
+		slog.Error("Error encoding sync response", "error", err)
 	}
 }
 

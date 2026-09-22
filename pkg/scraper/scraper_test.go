@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,5 +122,60 @@ func TestScraper_MockTransport(t *testing.T) {
 	}
 	if results["vm-2"].Error == nil {
 		t.Errorf("vm-2 should have failed")
+	}
+}
+
+func TestScraper_BoundedConcurrency(t *testing.T) {
+	var activeCount int32
+	var maxActive int32
+	var countMu sync.Mutex
+
+	blockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		countMu.Lock()
+		activeCount++
+		if activeCount > maxActive {
+			maxActive = activeCount
+		}
+		countMu.Unlock()
+
+		time.Sleep(30 * time.Millisecond)
+
+		countMu.Lock()
+		activeCount--
+		countMu.Unlock()
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("gpu_temp 40\n"))
+	}))
+	defer blockServer.Close()
+
+	parts := strings.Split(strings.TrimPrefix(blockServer.URL, "http://"), ":")
+	p, _ := strconv.Atoi(parts[1])
+
+	targets := make([]api.TargetVM, 10)
+	for i := 0; i < 10; i++ {
+		targets[i] = api.TargetVM{
+			VMID:    fmt.Sprintf("vm-%d", i),
+			GuestIP: parts[0],
+			Port:    p,
+		}
+	}
+
+	tr := transport.NewHTTPTransport(time.Second, 1024*1024)
+	// Bounded to 3 workers
+	scraper := NewScraper(tr, time.Second, 3)
+	results := scraper.ScrapeAll(context.Background(), targets)
+
+	if len(results) != 10 {
+		t.Fatalf("expected 10 results, got %d", len(results))
+	}
+	for id, res := range results {
+		if res.Error != nil {
+			t.Errorf("target %s failed: %v", id, res.Error)
+		}
+	}
+
+	if maxActive > 3 {
+		t.Errorf("expected maxActive <= 3, got %d", maxActive)
 	}
 }

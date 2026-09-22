@@ -13,6 +13,9 @@ func TestConfig_LoadFlags(t *testing.T) {
 		"-listen-addr", ":9999",
 		"-sync-interval", "30s",
 		"-scrape-timeout", "2s",
+		"-max-scrape-workers", "16",
+		"-log-format", "json",
+		"-log-level", "debug",
 	}
 
 	cfg, err := Load(args)
@@ -34,6 +37,15 @@ func TestConfig_LoadFlags(t *testing.T) {
 	}
 	if cfg.ScrapeTimeout != 2*time.Second {
 		t.Errorf("expected 2s, got %v", cfg.ScrapeTimeout)
+	}
+	if cfg.MaxScrapeWorkers != 16 {
+		t.Errorf("expected 16 workers, got %d", cfg.MaxScrapeWorkers)
+	}
+	if cfg.LogFormat != "json" {
+		t.Errorf("expected json log format, got %s", cfg.LogFormat)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("expected debug log level, got %s", cfg.LogLevel)
 	}
 }
 

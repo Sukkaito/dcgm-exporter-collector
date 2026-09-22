@@ -14,6 +14,8 @@ func TestConfig_LoadFlags(t *testing.T) {
 		"-extra-specs-key", "pci_passthrough:alias",
 		"-extra-specs-keyword", "gpu",
 		"-use-mock",
+		"-log-format", "json",
+		"-log-level", "debug",
 	}
 
 	cfg, err := Load(args)
@@ -23,6 +25,12 @@ func TestConfig_LoadFlags(t *testing.T) {
 
 	if cfg.ListenAddr != ":8443" {
 		t.Errorf("expected :8443, got %s", cfg.ListenAddr)
+	}
+	if cfg.LogFormat != "json" {
+		t.Errorf("expected json, got %s", cfg.LogFormat)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Errorf("expected debug, got %s", cfg.LogLevel)
 	}
 	if cfg.AuthURL != "https://keystone:5000/v3" {
 		t.Errorf("expected https://keystone:5000/v3, got %s", cfg.AuthURL)
