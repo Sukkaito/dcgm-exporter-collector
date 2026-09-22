@@ -1,4 +1,5 @@
 .agents/**
+.agent/**
 bin/**
 skills-lock.json
 
