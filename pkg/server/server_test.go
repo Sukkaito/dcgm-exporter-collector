@@ -85,6 +85,12 @@ func TestServer_Endpoints(t *testing.T) {
 	if !strings.Contains(metricBody, "vm_id=\"test-vm-1\"") {
 		t.Errorf("metrics body missing vm_id label: %s", metricBody)
 	}
+	if !strings.Contains(metricBody, "dcgm_collector_scrape_success") {
+		t.Errorf("metrics body missing dcgm_collector_scrape_success: %s", metricBody)
+	}
+	if !strings.Contains(metricBody, "dcgm_collector_targets_total") {
+		t.Errorf("metrics body missing dcgm_collector_targets_total: %s", metricBody)
+	}
 
 	// Test /status
 	w = httptest.NewRecorder()
