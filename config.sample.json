@@ -1,0 +1,24 @@
+{
+  "controller_url": "https://control-node.internal:8443",
+  "hostname": "hgx087.compute.internal",
+  "ca_cert_path": "/etc/dcgm-compute-agent/certs/ca.crt",
+  "cert_path": "/etc/dcgm-compute-agent/certs/client.crt",
+  "key_path": "/etc/dcgm-compute-agent/certs/client.key",
+  "sync_interval": "60s",
+  "sync_timeout": "10s",
+  "listen_addr": ":9405",
+  "scrape_timeout": "3s",
+  "cache_ttl": "5s",
+  "ovs_bridge": "br-int",
+  "ovs_vsctl_path": "ovs-vsctl",
+  "static_targets": [
+    {
+      "vm_id": "4b6ec340-e448-4395-927a-59fa3e7dc957",
+      "vm_name": "gpu-worker-01",
+      "project_id": "6d149cf2-7634-4bc1-9a74-d4b967814b7e",
+      "guest_ip": "10.0.0.12",
+      "port": 9400,
+      "gpu_ids": ["0", "1"]
+    }
+  ]
+}

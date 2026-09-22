@@ -1,0 +1,5 @@
+.agents/**
+bin/**
+skills-lock.json
+
+*.py
