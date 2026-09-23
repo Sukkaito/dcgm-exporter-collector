@@ -135,6 +135,9 @@ Sample configuration `/etc/dcgm-control-service/control.json`:
 ---
 
 ## 6. Systemd Service Deployment
+## 6. Service Deployment
+
+### Option A: Systemd Service Deployment
 
 1. Install the binary:
    ```bash
@@ -164,6 +167,32 @@ Sample configuration `/etc/dcgm-control-service/control.json`:
    systemctl daemon-reload
    systemctl enable --now dcgm-control-service
    ```
+
+### Option B: Docker Container Deployment
+
+#### 1. Build the Container Image
+Build using `make`, the dedicated `Dockerfile.control-service`, or root `Dockerfile`:
+```bash
+# Option 1: Using Makefile
+make docker-control
+
+# Option 2: Using Dockerfile.control-service
+docker build -t dcgm-control-service:latest -f Dockerfile.control-service .
+
+# Option 3: Using root Dockerfile
+docker build --target control-service -t dcgm-control-service:latest .
+```
+
+#### 2. Run the Container
+```bash
+docker run -d \
+  --name dcgm_control_service \
+  --restart unless-stopped \
+  -p 8443:8443 \
+  -v /etc/dcgm-control-service:/etc/dcgm-control-service:ro \
+  dcgm-control-service:latest \
+  -config /etc/dcgm-control-service/control.json
+```
 
 ---
 

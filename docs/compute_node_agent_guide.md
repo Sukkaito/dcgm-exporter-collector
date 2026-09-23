@@ -207,16 +207,38 @@ A successful connection returns HTTP 200 with the `SyncResponse` payload contain
 ### Option B: Docker Container on Kolla-Ansible Compute Host
 
 When running alongside Kolla containers:
+#### 1. Build the Container Image
+Build using `make`, the dedicated `Dockerfile.compute-agent`, or the root `Dockerfile`:
+```bash
+# Option 1: Using Makefile
+make docker-agent
+
+# Option 2: Using Dockerfile.compute-agent
+docker build -t dcgm-compute-agent:latest -f Dockerfile.compute-agent .
+
+# Option 3: Using root Dockerfile (defaults to compute-agent)
+docker build -t dcgm-compute-agent:latest .
+```
+
+#### 2. Run the Container alongside Kolla
 ```bash
 docker run -d \
   --name dcgm_compute_agent \
+  --restart unless-stopped \
   --network host \
   --cap-add NET_ADMIN \
   -v /var/run/openvswitch:/var/run/openvswitch:ro \
+  -v /var/run/openvswitch:/var/run/openvswitch \
   -v /etc/dcgm-compute-agent:/etc/dcgm-compute-agent:ro \
   dcgm-compute-agent:latest \
   -config /etc/dcgm-compute-agent/agent.json
 ```
+
+**Key Container Parameters**:
+- `--network host`: Attaches directly to the host network namespace to manage local veth interfaces and expose port `9405`.
+- `--cap-add NET_ADMIN`: Grants Linux network management permissions needed by `ip link` / `ip addr`.
+- `-v /var/run/openvswitch:/var/run/openvswitch`: Mounts the host OVS runtime directory so internal `ovs-vsctl` can connect to the Open vSwitch daemon socket (`db.sock`).
+- `-v /etc/dcgm-compute-agent:/etc/dcgm-compute-agent:ro`: Mounts the agent configuration and mTLS certificates.
 
 ---
 

@@ -3,7 +3,7 @@ AGENT_BIN := $(BIN_DIR)/dcgm-compute-agent
 CONTROL_BIN := $(BIN_DIR)/dcgm-control-service
 SRC := $(shell find . -name '*.go')
 
-.PHONY: all build build-agent build-control test clean vet
+.PHONY: all build build-agent build-control test clean vet docker docker-agent docker-control
 
 all: test build
 
@@ -29,4 +29,12 @@ vet:
 
 clean:
 	rm -rf $(BIN_DIR)
+
+docker: docker-agent docker-control
+
+docker-agent:
+	docker build -t dcgm-compute-agent:latest -f Dockerfile.compute-agent .
+
+docker-control:
+	docker build -t dcgm-control-service:latest -f Dockerfile.control-service .
 

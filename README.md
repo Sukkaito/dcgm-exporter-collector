@@ -101,7 +101,11 @@ dcgm-exporter-collector/
 │   └── control_node_service_guide.md # Control service deployment & operations guide
 ├── config.sample.json             # Sample configuration for compute agent
 ├── config.control.sample.json     # Sample configuration for control service
-└── Makefile                       # Build and test targets
+├── Dockerfile                     # Multi-stage Dockerfile (defaults to compute-agent)
+├── Dockerfile.compute-agent       # Dedicated Dockerfile for dcgm-compute-agent
+├── Dockerfile.control-service     # Dedicated Dockerfile for dcgm-control-service
+├── docker-compose.sample.yml      # Sample Docker Compose stack
+└── Makefile                       # Build, test, and container targets
 ```
 
 ---
@@ -120,6 +124,20 @@ go build -ldflags "-s -w" -o bin/dcgm-control-service ./cmd/dcgm-control-service
 
 # Or using Makefile
 make build
+```
+
+### Docker Container Build
+```bash
+# Build both container images via Makefile
+make docker
+
+# Or build individual images
+docker build -t dcgm-compute-agent:latest -f Dockerfile.compute-agent .
+docker build -t dcgm-control-service:latest -f Dockerfile.control-service .
+
+# Or using the root multi-stage Dockerfile
+docker build --target compute-agent -t dcgm-compute-agent:latest .
+docker build --target control-service -t dcgm-control-service:latest .
 ```
 
 ### Running Tests
@@ -265,5 +283,5 @@ Refer to [Compute Node Agent Guide](file:///run/media/sukkaito/Data/Code/golang/
 
 ## Detailed Documentation
 
-- [Compute Node Agent Deployment Guide](file:///run/media/sukkaito/Data/Code/golang/dcgm-exporter-collector/docs/compute_node_agent_guide.md)
-- [Control Node Service Deployment Guide](file:///run/media/sukkaito/Data/Code/golang/dcgm-exporter-collector/docs/control_node_service_guide.md)
+- [Compute Node Agent Deployment Guide](docs/compute_node_agent_guide.md)
+- [Control Node Service Deployment Guide](docs/control_node_service_guide.md)
