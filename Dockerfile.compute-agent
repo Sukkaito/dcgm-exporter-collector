@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+FROM golang:alpine AS builder
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/dcgm-compute-agent ./cmd/dcgm-compute-agent
+
+FROM alpine:latest
+RUN apk add --no-cache iproute2 openvswitch ca-certificates
+
+COPY --from=builder /bin/dcgm-compute-agent /usr/local/bin/dcgm-compute-agent
+
+EXPOSE 9405
+
+ENTRYPOINT ["/usr/local/bin/dcgm-compute-agent"]
+

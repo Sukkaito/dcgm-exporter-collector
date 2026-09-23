@@ -1,0 +1,35 @@
+services:
+  # ---------------------------------------------------------------------------
+  # Control Node Service (runs on OpenStack control node)
+  # ---------------------------------------------------------------------------
+  dcgm-control-service:
+    image: dcgm-control-service:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.control-service
+    container_name: dcgm_control_service
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - /etc/dcgm-control-service:/etc/dcgm-control-service:ro
+    command: ["-config", "/etc/dcgm-control-service/control.json"]
+
+  # ---------------------------------------------------------------------------
+  # Compute Node Agent (runs on each OpenStack compute / hypervisor host)
+  # ---------------------------------------------------------------------------
+  dcgm-compute-agent:
+    image: dcgm-compute-agent:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.compute-agent
+    container_name: dcgm_compute_agent
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - /var/run/openvswitch:/var/run/openvswitch
+      - /etc/dcgm-compute-agent:/etc/dcgm-compute-agent:ro
+    command: ["-config", "/etc/dcgm-compute-agent/agent.json"]
+
