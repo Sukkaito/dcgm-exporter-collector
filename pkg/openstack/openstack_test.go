@@ -28,8 +28,8 @@ func TestMockOpenStackClient(t *testing.T) {
 	if len(endpoints) != 1 {
 		t.Fatalf("expected 1 endpoint, got %d", len(endpoints))
 	}
-	if endpoints[0].VethName != "host-net-net-uuid" {
-		t.Errorf("expected host-net-net-uuid, got %s", endpoints[0].VethName)
+	if endpoints[0].VethName != "netnet-uuid" {
+		t.Errorf("expected netnet-uuid, got %s", endpoints[0].VethName)
 	}
 }
 

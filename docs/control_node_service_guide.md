@@ -228,7 +228,7 @@ Example response:
       "port_id": "89ec937a-4299-4d62-a5ec-9f5b2b2b1897",
       "mac": "fa:16:3e:ab:cd:ef",
       "ip": "10.0.0.254/24",
-      "veth_name": "host-net-31464df7"
+      "veth_name": "net31464df7"
     }
   ],
   "targets": [

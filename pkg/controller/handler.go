@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/api"
@@ -31,6 +32,7 @@ func (h *Handler) SetAllowInsecureTLS(allow bool) {
 // HandleSync processes compute node synchronization requests.
 func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		slog.Warn("Invalid method for sync request", "method", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -45,17 +47,27 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	slog.Info("Handling sync request for host", "host", computeHost)
 
 	// 1. Discover GPU passthrough VMs for the compute host
+	slog.Debug("Step 1: Discovering GPU passthrough VMs", "host", computeHost)
 	targets, err := h.osClient.DiscoverComputeVMs(r.Context(), computeHost)
 	if err != nil {
 		slog.Error("Error discovering VMs", "host", computeHost, "error", err)
 		http.Error(w, fmt.Sprintf("Failed to discover VMs: %v", err), http.StatusInternalServerError)
 		return
 	}
+	slog.Debug("Step 1 complete: Discovered GPU passthrough VMs", "host", computeHost, "count", len(targets))
 
 	// 2. Collect unique network IDs across discovered VMs
+	slog.Debug("Step 2: Collecting unique network IDs across discovered VMs", "host", computeHost)
 	networkSet := make(map[string]struct{})
 	for _, t := range targets {
-		_ = t
+		if t.NetworkID != "" {
+			networkSet[t.NetworkID] = struct{}{}
+		}
+		for _, netID := range t.NetworkIDs {
+			if netID != "" {
+				networkSet[netID] = struct{}{}
+			}
+		}
 	}
 
 	// 3. Ensure persistent host ports for all required networks
@@ -63,6 +75,8 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	for netID := range networkSet {
 		networkList = append(networkList, netID)
 	}
+	sort.Strings(networkList)
+	slog.Debug("Step 3: Ensuring persistent host ports for networks", "host", computeHost, "network_count", len(networkList), "networks", networkList)
 
 	endpoints, err := h.osClient.EnsureHostPorts(r.Context(), computeHost, networkList)
 	if err != nil {
@@ -70,7 +84,10 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to ensure host ports: %v", err), http.StatusInternalServerError)
 		return
 	}
+	slog.Debug("Step 3 complete: Ensured persistent host ports", "host", computeHost, "endpoint_count", len(endpoints))
 
+	// 4. Send response
+	slog.Debug("Step 4: Sending sync response", "host", computeHost)
 	resp := api.SyncResponse{
 		Status:    "ok",
 		Endpoints: endpoints,
@@ -81,6 +98,8 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		slog.Error("Error encoding sync response", "error", err)
+	} else {
+		slog.Info("Sync completed successfully", "host", computeHost, "endpoints", len(resp.Endpoints), "targets", len(resp.Targets))
 	}
 }
 

@@ -55,7 +55,7 @@ func TestEndToEndCollectorStack(t *testing.T) {
 		resp := api.SyncResponse{
 			Status: "ok",
 			Endpoints: []api.HostNetworkEndpoint{
-				{NetworkID: "net-a", PortID: "port-a", MAC: "fa:16:3e:00:11:22", IP: "10.0.0.254/24", VethName: "host-net-a"},
+				{NetworkID: "net-a", PortID: "port-a", MAC: "fa:16:3e:00:11:22", IP: "10.0.0.254/24", VethName: "neta"},
 			},
 			Targets: []api.TargetVM{
 				{VMID: "vm-uuid-1", VMName: "worker-gpu-1", ProjectID: "proj-1", GuestIP: ip1, Port: port1},
