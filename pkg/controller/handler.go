@@ -88,6 +88,16 @@ func (h *Handler) HandleSync(w http.ResponseWriter, r *http.Request) {
 
 	// 4. Send response
 	slog.Debug("Step 4: Sending sync response", "host", computeHost)
+	for i := range targets {
+		if targets[i].NetNS == "" && targets[i].NetworkID != "" {
+			shortID := targets[i].NetworkID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			targets[i].NetNS = fmt.Sprintf("dcgm-%s", shortID)
+		}
+	}
+
 	resp := api.SyncResponse{
 		Status:    "ok",
 		Endpoints: endpoints,

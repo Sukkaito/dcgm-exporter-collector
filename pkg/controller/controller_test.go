@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -218,6 +219,22 @@ func TestController_HandleSync_CollectsUniqueNetworks(t *testing.T) {
 	for netID, found := range expectedNets {
 		if !found {
 			t.Errorf("missing expected endpoint network: %s", netID)
+		}
+	}
+
+	for _, ep := range resp.Endpoints {
+		expectedNS := fmt.Sprintf("dcgm-%s", ep.NetworkID[:8])
+		if ep.NetNS != expectedNS {
+			t.Errorf("expected endpoint netns %s, got %s", expectedNS, ep.NetNS)
+		}
+	}
+
+	for _, target := range resp.Targets {
+		if target.NetworkID != "" {
+			expectedNS := fmt.Sprintf("dcgm-%s", target.NetworkID[:8])
+			if target.NetNS != expectedNS {
+				t.Errorf("expected target %s netns %s, got %s", target.VMID, expectedNS, target.NetNS)
+			}
 		}
 	}
 }

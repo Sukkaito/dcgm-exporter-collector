@@ -164,6 +164,16 @@ func (c *Coordinator) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("unmarshaling sync response: %w", err)
 	}
 
+	for i := range syncResp.Targets {
+		if syncResp.Targets[i].NetNS == "" && syncResp.Targets[i].NetworkID != "" {
+			shortID := syncResp.Targets[i].NetworkID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			syncResp.Targets[i].NetNS = fmt.Sprintf("dcgm-%s", shortID)
+		}
+	}
+
 	slog.Info("Parsed sync response", "status", syncResp.Status, "endpoints", len(syncResp.Endpoints), "targets", len(syncResp.Targets))
 
 	// Reconcile network endpoints if network manager is configured

@@ -73,6 +73,7 @@ func (m *MockOpenStackClient) EnsureHostPorts(ctx context.Context, computeHost s
 			MAC:       "fa:16:3e:aa:bb:cc",
 			IP:        "10.0.0.254/24",
 			VethName:  fmt.Sprintf("net%s", short),
+			NetNS:     fmt.Sprintf("dcgm-%s", short),
 		})
 	}
 	return result, nil

@@ -58,8 +58,8 @@ A compute-initiated GPU telemetry collection and synchronization stack for OpenS
 2. **Compute Node (`dcgm-compute-agent`)**:
    - Single unified binary executed as a single command.
    - Holds **zero OpenStack credentials** and **zero host GPU device access**.
-   - Idempotently creates persistent veth pairs and calls the host `ovs-vsctl` client to attach interfaces to `br-int` with `external_ids:iface-id` for OVN port binding.
-   - Concurrently scrapes guest `dcgm-exporter` endpoints over local IPv4 with strict per-target timeouts and fault isolation.
+   - Idempotently provisions persistent veth pairs, isolates host endpoints into dedicated network namespaces (`dcgm-<short-id>`) to prevent route collisions across overlapping tenant subnets, and attaches peer interfaces to `br-int` with `external_ids:iface-id` for OVN port binding.
+   - Concurrently scrapes guest `dcgm-exporter` endpoints over local IPv4 directly within each target's network namespace with strict per-target timeouts, per-netns connection pooling, and fault isolation.
    - Preserves all default `dcgm-exporter` labels while enriching metrics with authoritative hypervisor dimensions (`host`, `vm_id`, `vm_name`, `project_id`).
    - Injects operational health metrics (`dcgm_collector_scrape_success`, scrape latency, target counts) into `/metrics`.
 
@@ -69,6 +69,7 @@ A compute-initiated GPU telemetry collection and synchronization stack for OpenS
 
 - **Zero Host GPU Overhead**: The compute host does not run NVIDIA drivers or DCGM. All GPU hardware communication happens inside the guest VM.
 - **Compute-Initiated mTLS**: Compute nodes initiate synchronization with the control node. The control node identifies hosts via client certificate `CN`, preventing spoofing.
+- **Isolated Network Namespaces (`netns`)**: Each tenant network host port is isolated inside `dcgm-<short-id>` on the compute node. Overlapping tenant CIDRs never collide in the host root routing table.
 - **Direct `ovs-vsctl` CLI Integration**: Reconciles `br-int` ports directly using host `ovs-vsctl` commands without requiring raw OVSDB socket mounts.
 - **Flexible Flavor Detection**: Discovers GPU workloads if flavor extra specs define `family: gpu` or `pci_passthrough:alias` with any GPU model name (e.g. `RTX4090:1`, `A100:1`, `H100:1`).
 - **Fault Isolation**: A slow, restarting, or failing guest VM exporter does not block or degrade scrapes for other VMs on the compute host.

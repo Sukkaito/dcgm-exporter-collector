@@ -143,6 +143,15 @@ func (c *GophercloudClient) DiscoverComputeVMs(ctx context.Context, computeHost 
 			continue
 		}
 
+		netnsName := ""
+		if networkID != "" {
+			shortID := networkID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			netnsName = fmt.Sprintf("dcgm-%s", shortID)
+		}
+
 		targets = append(targets, api.TargetVM{
 			VMID:       s.ID,
 			VMName:     s.Name,
@@ -151,6 +160,7 @@ func (c *GophercloudClient) DiscoverComputeVMs(ctx context.Context, computeHost 
 			NetworkIDs: networkIDs,
 			GuestIP:    guestIP,
 			Port:       9400,
+			NetNS:      netnsName,
 		})
 	}
 
@@ -276,12 +286,14 @@ func (c *GophercloudClient) EnsureHostPorts(ctx context.Context, computeHost str
 		ipWithCIDR := c.formatPortIPWithCIDR(ctx, port)
 		slog.Debug("Formatted port IP with CIDR", "port_id", port.ID, "ip_cidr", ipWithCIDR)
 
+		netnsName := fmt.Sprintf("dcgm-%s", shortNetID)
 		endpoints = append(endpoints, api.HostNetworkEndpoint{
 			NetworkID: netID,
 			PortID:    port.ID,
 			MAC:       port.MACAddress,
 			IP:        ipWithCIDR,
 			VethName:  vethName,
+			NetNS:     netnsName,
 		})
 	}
 
