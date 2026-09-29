@@ -6,6 +6,10 @@ An out-of-band telemetry collection system that gathers GPU metrics from OpenSta
 
 ### Core Components
 
+**Compute Host**:
+The physical hardware machine and hypervisor operating system where the Compute Agent runs.
+_Avoid_: Compute Server, Node Server, Baremetal Server, Server (unqualified)
+
 **Compute Agent**:
 A daemon running on hypervisor compute nodes that scrapes guest telemetry endpoints and enriches metrics with hypervisor metadata.
 _Avoid_: Node Collector, Central Controller, Collector Agent
@@ -17,8 +21,9 @@ _Avoid_: Central Controller, Control Coordinator, Master Service
 ### Workloads & Endpoints
 
 **Target VM**:
-An OpenStack virtual machine provisioned with PCI passthrough GPU devices that exposes a guest telemetry endpoint.
-_Avoid_: Guest Instance, Passthrough VM, Worker VM, GPU Instance
+An OpenStack Nova server provisioned with PCI passthrough GPU devices that exposes a guest telemetry endpoint. Specifically refers to a Nova-managed compute instance; virtual machines created directly on the hypervisor outside Nova (e.g. via direct libvirt/virsh) are not Target VMs and are never discovered or scraped.
+_Avoid_: Guest Instance, Local VM, Passthrough VM, Worker VM, GPU Instance, Server (unqualified)
+
 
 **Guest Exporter**:
 A daemon running inside a Target VM that exposes GPU telemetry in Prometheus format.
