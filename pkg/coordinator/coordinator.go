@@ -177,7 +177,7 @@ func (c *Coordinator) SyncOnce(ctx context.Context) error {
 	slog.Info("Parsed sync response", "status", syncResp.Status, "endpoints", len(syncResp.Endpoints), "targets", len(syncResp.Targets))
 
 	// Reconcile network endpoints if network manager is configured
-	if c.networkManager != nil && len(syncResp.Endpoints) > 0 {
+	if c.networkManager != nil {
 		slog.Info("Reconciling network endpoints", "count", len(syncResp.Endpoints))
 		slog.Debug(fmt.Sprintf("%#v", syncResp))
 		if err := c.networkManager.ReconcileEndpoints(ctx, syncResp.Endpoints); err != nil {
@@ -233,6 +233,13 @@ func (c *Coordinator) GetTargets() []api.TargetVM {
 	result := make([]api.TargetVM, len(c.targets))
 	copy(result, c.targets)
 	return result
+}
+
+// SetTargets updates the active target list (useful for dynamic testing).
+func (c *Coordinator) SetTargets(targets []api.TargetVM) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.targets = targets
 }
 
 // GetSyncStatus returns the last sync timestamp and error if any.

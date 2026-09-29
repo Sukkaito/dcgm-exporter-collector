@@ -179,3 +179,61 @@ func TestScraper_BoundedConcurrency(t *testing.T) {
 		t.Errorf("expected maxActive <= 3, got %d", maxActive)
 	}
 }
+
+func TestScraper_PruneTargets(t *testing.T) {
+	mock := &mockTransport{
+		responses: map[string][]byte{
+			"vm-1": []byte("# HELP dcgm test\n"),
+			"vm-2": []byte("# HELP dcgm test\n"),
+			"vm-3": []byte("# HELP dcgm test\n"),
+		},
+	}
+
+	scraper := NewScraper(mock, time.Second)
+	targets := []api.TargetVM{
+		{VMID: "vm-1", VMName: "inst-1", GuestIP: "10.0.0.10", Port: 9400},
+		{VMID: "vm-2", VMName: "inst-2", GuestIP: "10.0.0.11", Port: 9400},
+		{VMID: "vm-3", VMName: "inst-3", GuestIP: "10.0.0.12", Port: 9400},
+	}
+
+	// 1. Initial scrape of all 3 targets
+	_ = scraper.ScrapeAll(context.Background(), targets)
+	status := scraper.GetStatus()
+	if status.TotalTargets != 3 {
+		t.Fatalf("expected 3 targets, got %d", status.TotalTargets)
+	}
+
+	// 2. PruneTargets directly with vm-1 and vm-3 (vm-2 removed)
+	activeAfterDelete := []api.TargetVM{targets[0], targets[2]}
+	scraper.PruneTargets(activeAfterDelete)
+
+	status = scraper.GetStatus()
+	if status.TotalTargets != 2 {
+		t.Fatalf("expected 2 targets after pruning, got %d", status.TotalTargets)
+	}
+	for _, exp := range status.Exporters {
+		if exp.VMID == "vm-2" {
+			t.Errorf("expected vm-2 to be pruned, but found in status")
+		}
+	}
+
+	// 3. ScrapeAll automatically prunes targets not in the passed list
+	_ = scraper.ScrapeAll(context.Background(), []api.TargetVM{targets[0]})
+	status = scraper.GetStatus()
+	if status.TotalTargets != 1 {
+		t.Fatalf("expected 1 target after ScrapeAll with 1 target, got %d", status.TotalTargets)
+	}
+	if status.Exporters[0].VMID != "vm-1" {
+		t.Errorf("expected only vm-1, got %s", status.Exporters[0].VMID)
+	}
+
+	// 4. ScrapeAll with empty target list prunes all remaining targets
+	_ = scraper.ScrapeAll(context.Background(), []api.TargetVM{})
+	status = scraper.GetStatus()
+	if status.TotalTargets != 0 {
+		t.Fatalf("expected 0 targets after empty ScrapeAll, got %d", status.TotalTargets)
+	}
+	if len(status.Exporters) != 0 {
+		t.Errorf("expected empty exporters slice, got %d", len(status.Exporters))
+	}
+}
