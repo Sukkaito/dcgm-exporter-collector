@@ -1,42 +1,44 @@
-# Compute-Node Collector Agent Deployment Guide
+# Compute Agent Deployment Guide
 
-This guide describes how to configure, deploy, and verify the `dcgm-compute-agent` on OpenStack compute nodes deployed via Kolla-Ansible.
+This guide describes how to configure, deploy, and verify the Compute Agent (`dcgm-compute-agent`) on OpenStack Compute Hosts deployed via Kolla-Ansible.
 
 ---
 
 ## 1. Overview
 
-`dcgm-compute-agent` is a unified single-binary daemon running on each participating compute host. It operates without OpenStack API credentials and performs two primary duties:
+The **Compute Agent** (`dcgm-compute-agent`) is a unified single-binary daemon running on each participating **Compute Host**. It operates without OpenStack API credentials and performs two primary duties:
 
-1. **Network Provisioner**: Periodically contacts the control-node sync controller via HTTPS/mTLS (`POST /api/v1/host/sync`), reconciles persistent veth pairs, and attaches them to Open vSwitch (`br-int`) using the local `ovs-vsctl` client.
-2. **GPU Telemetry Collector**: Scrapes guest `dcgm-exporter` instances concurrently across passthrough VMs using local IPv4, enriches metrics with host and VM metadata, and exposes a Prometheus-compatible `/metrics` endpoint.
+1. **Network Provisioner**: Periodically contacts the **Control Service** via HTTPS/mTLS (`POST /api/v1/host/sync` for **Host Sync**), reconciles persistent Host Network Endpoints inside isolated **Tenant Network Namespaces** (`dcgm-<short-id>`), and attaches **OVS Peer Interfaces** to Open vSwitch (`br-int`) using the local `ovs-vsctl` client.
+2. **GPU Telemetry Collector**: Scrapes **Guest Exporters** concurrently across **Target VMs** using local IPv4 within their dedicated Tenant Network Namespaces, enriches metrics with **Hypervisor Metadata**, and exposes an aggregated Prometheus `/metrics` endpoint.
+
 
 ```text
                            CONTROL NODE
                   +----------------------------+
-                  | host-network-controller    |
-                  | (OpenStack Admin / Nova)   |
+                  |       Control Service      |
+                  |    (dcgm-control-service)  |
                   +-------------^--------------+
                                 |
                          HTTPS + mTLS
+                          (Host Sync)
                                 |
                   +-------------+--------------+
                   |         COMPUTE NODE       |
                   |                            |
-                  |    dcgm-compute-agent      |
+                  |     dcgm-compute-agent     |
                   |  +-----------------------+ |
-                  |  | Coordinator & Sync    | |
+                  |  | Host Sync Client      | |
                   |  | Network Provisioner   | |
                   |  | Telemetry Collector   | |
                   |  +-----------+-----------+ |
                   |              |             |
-                  |     veth pair via ovs-vsctl|
+                  |       OVS Peer Interface   |
                   |              v             |
                   |            br-int          |
                   |              |             |
-                  |        VM Local IPv4       |
+                  |  Tenant Network Namespace  |
                   |              v             |
-                  |     guest dcgm-exporter    |
+                  |     Guest Exporter         |
                   |       (:9400/metrics)      |
                   +--------------+-------------+
                                  |
@@ -50,13 +52,13 @@ This guide describes how to configure, deploy, and verify the `dcgm-compute-agen
 ## 2. Prerequisites & Host Privileges
 
 The agent requires:
-- **Network Capabilities**: `CAP_NET_ADMIN` (or root execution) to manage veth interfaces and IP addresses via Linux netlink / `ip`.
-- **Open vSwitch CLI**: Access to execute `ovs-vsctl` to manage ports on `br-int`.
+- **Network Capabilities**: `CAP_NET_ADMIN` (or root execution) to manage veth interfaces, network namespaces, and IP addresses via Linux netlink / `ip`.
+- **Open vSwitch CLI**: Access to execute `ovs-vsctl` to manage OVS Peer Interfaces on `br-int`.
 - **Network Access**:
-  - Outbound HTTPS to the control-node controller.
-  - Inbound local IPv4 to guest VM ports (typically port `9400`).
-  - Inbound HTTP on port `:9405` for Prometheus metric collection.
-- **Zero Host GPU Requirements**: The compute host does **not** need the NVIDIA driver, NVML, or DCGM libraries installed.
+  - Outbound HTTPS to the Control Service.
+  - Inbound local IPv4 to Guest Exporter ports on Target VMs (typically port `9400`).
+  - Inbound HTTP on port `:9405` for Prometheus metric collection and **Collector Metrics**.
+- **Zero Host GPU Requirements**: The Compute Host does **not** need the NVIDIA driver, NVML, or DCGM libraries installed.
 
 ---
 
@@ -66,17 +68,17 @@ Configuration can be supplied via command-line flags, environment variables, or 
 
 | Flag | Environment Variable | Default | Description |
 |---|---|---|---|
-| `-controller-url` | `DCGM_CONTROLLER_URL` | `""` | HTTPS URL of the control node sync API |
-| `-hostname` | `DCGM_HOSTNAME` | Hostname | Compute node identifier for sync & metric labeling |
-| `-ca-cert` | `DCGM_CA_CERT` | `""` | Path to CA certificate for verifying the controller |
+| `-controller-url` | `DCGM_CONTROLLER_URL` | `""` | HTTPS URL of the Control Service Host Sync API |
+| `-hostname` | `DCGM_HOSTNAME` | Hostname | Compute Host identifier for Host Sync & metric labeling |
+| `-ca-cert` | `DCGM_CA_CERT` | `""` | Path to CA certificate for verifying the Control Service |
 | `-cert` | `DCGM_CLIENT_CERT` | `""` | Path to client certificate for mTLS |
 | `-key` | `DCGM_CLIENT_KEY` | `""` | Path to client private key for mTLS |
-| `-sync-interval` | `DCGM_SYNC_INTERVAL` | `60s` | Interval between controller synchronization requests |
-| `-sync-timeout` | `DCGM_SYNC_TIMEOUT` | `10s` | HTTP timeout for control node sync calls |
-| `-listen-addr` | `DCGM_LISTEN_ADDR` | `:9405` | HTTP listen address for `/metrics` and status |
-| `-scrape-timeout` | `DCGM_SCRAPE_TIMEOUT` | `3s` | Per-VM guest exporter scrape timeout |
+| `-sync-interval` | `DCGM_SYNC_INTERVAL` | `60s` | Interval between Host Sync requests |
+| `-sync-timeout` | `DCGM_SYNC_TIMEOUT` | `10s` | HTTP timeout for Control Service Host Sync calls |
+| `-listen-addr` | `DCGM_LISTEN_ADDR` | `:9405` | HTTP listen address for `/metrics`, Collector Metrics, and status |
+| `-scrape-timeout` | `DCGM_SCRAPE_TIMEOUT` | `3s` | Per-Target VM Guest Exporter scrape timeout |
 | `-cache-ttl` | `DCGM_CACHE_TTL` | `5s` | Metric exposition cache duration |
-| `-ovs-bridge` | `DCGM_OVS_BRIDGE` | `br-int` | Open vSwitch integration bridge name |
+| `-ovs-bridge` | `DCGM_OVS_BRIDGE` | `br-int` | Open vSwitch integration bridge name for OVS Peer Interfaces |
 | `-ovs-vsctl` | `DCGM_OVS_VSCTL` | `ovs-vsctl` | Executable path to `ovs-vsctl` |
 | `-config` | `DCGM_CONFIG_FILE` | `""` | Path to optional JSON configuration file |
 
@@ -84,10 +86,10 @@ Configuration can be supplied via command-line flags, environment variables, or 
 
 ## 4. CA & mTLS Certificate Configuration Guide
 
-The compute agent uses mutually authenticated TLS (mTLS) to communicate securely with the control node sync API (`POST /api/v1/host/sync`).
+The Compute Agent uses mutually authenticated TLS (mTLS) to communicate securely with the Control Service Host Sync API (`POST /api/v1/host/sync`).
 
-- **CA Certificate (`ca_cert_path`)**: Verifies the authenticity of the control node server certificate.
-- **Client Certificate (`cert_path`)**: Identifies the compute host to the control node. The Common Name (CN) or SAN must match the compute hostname.
+- **CA Certificate (`ca_cert_path`)**: Verifies the authenticity of the Control Service server certificate.
+- **Client Certificate (`cert_path`)**: Identifies the Compute Host to the Control Service. The Common Name (CN) or SAN must match the Compute Host hostname.
 - **Client Private Key (`key_path`)**: The private key corresponding to the client certificate.
 
 ### 4.1 Generating Certificates (Example with OpenSSL)
@@ -101,7 +103,7 @@ If using an internal PKI or self-signed CA:
      -subj "/CN=DCGM-Telemetry-CA"
    ```
 
-2. **Generate Compute Node Private Key and CSR (on compute node)**:
+2. **Generate Compute Host Private Key and CSR (on Compute Host)**:
    ```bash
    COMPUTE_HOST="hgx087.compute.internal"
 
@@ -110,11 +112,12 @@ If using an internal PKI or self-signed CA:
      -subj "/CN=${COMPUTE_HOST}"
    ```
 
-3. **Sign Compute Node Client Certificate with CA**:
+3. **Sign Compute Host Client Certificate with CA**:
    ```bash
    openssl x509 -req -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
      -out client.crt -days 365 -sha256
    ```
+
 
 ### 4.2 File Permissions & Placement
 
@@ -134,7 +137,7 @@ chmod 600 /etc/dcgm-compute-agent/certs/client.key
 
 ### 4.3 Verifying mTLS Connectivity with Curl
 
-Test connectivity from the compute host to the control node before starting the agent:
+Test connectivity from the Compute Host to the control node before starting the agent:
 ```bash
 curl --cacert /etc/dcgm-compute-agent/certs/ca.crt \
      --cert /etc/dcgm-compute-agent/certs/client.crt \
@@ -143,7 +146,8 @@ curl --cacert /etc/dcgm-compute-agent/certs/ca.crt \
      -H "Content-Type: application/json" \
      -d '{"action":"sync"}'
 ```
-A successful connection returns HTTP 200 with the `SyncResponse` payload containing network endpoints and VM targets.
+A successful connection returns HTTP 200 with the `SyncResponse` payload containing Host Network Endpoints and Target VMs.
+
 
 ---
 
@@ -180,7 +184,7 @@ A successful connection returns HTTP 200 with the `SyncResponse` payload contain
 4. Create systemd unit `/etc/systemd/system/dcgm-compute-agent.service`:
    ```ini
    [Unit]
-   Description=DCGM Exporter Compute Collector Agent
+   Description=DCGM Exporter Compute Agent
    After=network.target openvswitch-switch.service
    Wants=network.target
 
@@ -235,8 +239,8 @@ docker run -d \
 ```
 
 **Key Container Parameters**:
-- `--network host`: Attaches directly to the host network namespace to manage local veth interfaces and expose port `9405`.
-- `--cap-add NET_ADMIN`: Grants Linux network management permissions needed by `ip link` / `ip addr`.
+- `--network host`: Attaches directly to the host network namespace to manage network namespaces, veth interfaces, and expose port `9405`.
+- `--cap-add NET_ADMIN`: Grants Linux network management permissions needed by `ip link`, `ip netns`, and `ip addr`.
 - `-v /var/run/openvswitch:/var/run/openvswitch`: Mounts the host OVS runtime directory so internal `ovs-vsctl` can connect to the Open vSwitch daemon socket (`db.sock`).
 - `-v /etc/dcgm-compute-agent:/etc/dcgm-compute-agent:ro`: Mounts the agent configuration and mTLS certificates.
 
@@ -257,8 +261,8 @@ docker run -d \
   # Expected output: READY
   ```
 
-### Target Status Report
-Inspect the operational state of all monitored VMs and guest exporters:
+### Scrape Target Status Report
+Inspect the operational state of all monitored Target VMs and Guest Exporters:
 ```bash
 curl -s http://localhost:9405/status | jq .
 ```
@@ -286,7 +290,7 @@ Example response:
 ```bash
 curl -s http://localhost:9405/metrics | grep DCGM_FI_DEV_GPU_UTIL
 ```
-Example enriched metric output:
+Example enriched metric output with Hypervisor Metadata:
 ```text
 # HELP DCGM_FI_DEV_GPU_UTIL GPU utilization (in %).
 # TYPE DCGM_FI_DEV_GPU_UTIL gauge
@@ -297,6 +301,8 @@ DCGM_FI_DEV_GPU_UTIL{UUID="GPU-4c19ad77-3e1b-...",device="nvidia0",gpu="0",host=
 
 ## 7. Fault Isolation & Recovery
 
-- **Unreachable VM / Guest Exporter Restart**: The collector isolates failures per VM using a 3-second timeout. An unreachable VM does not delay or block scrapes for other VMs. Its status in `/status` will indicate `healthy: false` with the exact connection error while healthy VMs continue serving metrics.
-- **Compute Host Reboot**: The agent starts on boot, synchronizes state from the control node, recreates the veth pair and attaches it to `br-int` idempotently.
-- **Control Node Outage**: Existing host veth pairs and OVS attachments remain active; the agent continues scraping existing VMs and retries control node sync periodically.
+- **Unreachable Target VM / Guest Exporter Restart**: The Compute Agent isolates failures per Scrape Target using a 3-second timeout. An unreachable Target VM does not delay or block scrapes for other Target VMs. (Note: Only Nova-managed Target VMs are monitored; virtual machines created directly on the hypervisor outside Nova are not Target VMs and are never discovered or scraped). Its status in `/status` will indicate `healthy: false` with the exact connection error while healthy Target VMs continue serving metrics.
+- **Compute Host Reboot**: The Compute Agent starts on boot, performs Host Sync with the Control Service, recreates Host Network Endpoints inside Tenant Network Namespaces, and attaches OVS Peer Interfaces to `br-int` idempotently.
+- **Control Service Outage**: Existing Tenant Network Namespaces and OVS Peer Interfaces remain active; the Compute Agent continues scraping existing Target VMs and retries Host Sync periodically.
+
+

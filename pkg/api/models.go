@@ -17,16 +17,20 @@ type HostNetworkEndpoint struct {
 	MAC       string `json:"mac"`
 	IP        string `json:"ip"` // e.g. "10.0.0.254/24"
 	VethName  string `json:"veth_name"`
+	NetNS     string `json:"netns,omitempty"`
 }
 
 // TargetVM represents a GPU-passthrough virtual machine to be scraped.
 type TargetVM struct {
-	VMID      string   `json:"vm_id"`
-	VMName    string   `json:"vm_name"`
-	ProjectID string   `json:"project_id,omitempty"`
-	GuestIP   string   `json:"guest_ip"`
-	Port      int      `json:"port"`
-	GPUIDs    []string `json:"gpu_ids,omitempty"`
+	VMID       string   `json:"vm_id"`
+	VMName     string   `json:"vm_name"`
+	ProjectID  string   `json:"project_id,omitempty"`
+	NetworkID  string   `json:"network_id,omitempty"`
+	NetworkIDs []string `json:"network_ids,omitempty"`
+	GuestIP    string   `json:"guest_ip"`
+	Port       int      `json:"port"`
+	GPUIDs     []string `json:"gpu_ids,omitempty"`
+	NetNS      string   `json:"netns,omitempty"`
 }
 
 // SyncResponse is returned by the control-node sync API to the compute agent.

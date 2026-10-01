@@ -2,7 +2,8 @@
 
 A compute-initiated GPU telemetry collection and synchronization stack for OpenStack environments deployed with Kolla-Ansible.
 
-`dcgm-exporter-collector` collects NVIDIA GPU metrics from passthrough virtual machines without requiring NVIDIA GPU drivers, NVML, or DCGM libraries on the physical compute host. Telemetry is collected directly from guest-level `dcgm-exporter` endpoints over an isolated local network datapath attached to Open vSwitch (`br-int`), enriched with authoritative OpenStack metadata, and exposed as a single Prometheus `/metrics` endpoint per compute node.
+`dcgm-exporter-collector` collects GPU metrics from **Target VMs** (OpenStack Nova servers with PCI passthrough GPUs, distinguished from local hypervisor VMs) without requiring GPU drivers, NVML, or DCGM libraries on the physical **Compute Host**. Telemetry is scraped directly from **Guest Exporters** over isolated **Tenant Network Namespaces** attached to Open vSwitch (`br-int`) via **OVS Peer Interfaces**, enriched with authoritative **Hypervisor Metadata**, and exposed as a single Prometheus `/metrics` endpoint per Compute Host alongside operational **Collector Metrics**.
+
 
 ---
 
@@ -11,33 +12,35 @@ A compute-initiated GPU telemetry collection and synchronization stack for OpenS
 ```text
                            CONTROL NODE
                   +----------------------------+
-                  |    dcgm-control-service    |
+                  |       Control Service      |
+                  |    (dcgm-control-service)  |
                   |                            |
                   | - Holds OpenStack Admin    |
-                  | - Nova VM & Flavor Check   |
-                  | - Neutron Host Port Bind   |
+                  | - Discovers Target VMs     |
+                  | - Provisions Host Endpoints|
                   +-------------^--------------+
                                 |
                          HTTPS + mTLS
-                     (Compute Client Cert)
+                          (Host Sync)
                                 |
                   +-------------+--------------+
                   |         COMPUTE NODE       |
                   |                            |
                   |     dcgm-compute-agent     |
+                  |       (Compute Agent)      |
                   |  +-----------------------+ |
-                  |  | Coordinator (mTLS)    | |
+                  |  | Host Sync Client      | |
                   |  | Network Provisioner   | |
                   |  | Telemetry Scraper     | |
                   |  +-----------+-----------+ |
                   |              |             |
-                  |     veth pair via ovs-vsctl|
+                  |      OVS Peer Interface    |
                   |              v             |
                   |            br-int          |
                   |              |             |
-                  |        Local IPv4          |
+                  |  Tenant Network Namespace  |
                   |              v             |
-                  |     guest dcgm-exporter    |
+                  |       Guest Exporter       |
                   |       (:9400/metrics)      |
                   +--------------+-------------+
                                  |
@@ -48,31 +51,34 @@ A compute-initiated GPU telemetry collection and synchronization stack for OpenS
 
 ### Separation of Responsibilities
 
-1. **Control Node (`dcgm-control-service`)**:
+1. **Control Service (`dcgm-control-service`)**:
    - The **only** component holding OpenStack API credentials.
-   - Enforces mutually authenticated TLS (mTLS) and verifies the compute node hostname from the client certificate Subject Common Name (`CN`).
-   - Queries Nova for active VMs on the requesting compute host and inspects flavor extra specs (`pci_passthrough:alias`, `family: gpu`) to discover GPU passthrough instances.
-   - Provisions one persistent host-side Neutron port per `(compute_host, network_id)` pair bound to the compute host (`binding:host_id`).
-   - Returns desired network endpoints and VM scrape targets to the compute agent.
+   - Enforces mutually authenticated TLS (mTLS) and verifies the Compute Host hostname from the client certificate Subject Common Name (`CN`).
+   - Queries Nova for active servers on the requesting Compute Host and inspects flavor extra specs (`pci_passthrough:alias`, `family: gpu`) to discover Target VMs (Nova servers with assigned GPUs). Virtual machines created directly on the hypervisor outside Nova are not Target VMs and are never discovered.
+   - Provisions one persistent Host Network Endpoint (Neutron port) per `(compute_host, network_id)` pair bound to the Compute Host (`binding:host_id`).
+   - Returns desired Host Network Endpoints and Target VMs to the Compute Agent during Host Sync.
 
-2. **Compute Node (`dcgm-compute-agent`)**:
-   - Single unified binary executed as a single command.
+2. **Compute Agent (`dcgm-compute-agent`)**:
+   - Single unified binary executed as a daemon on each Compute Host.
    - Holds **zero OpenStack credentials** and **zero host GPU device access**.
-   - Idempotently creates persistent veth pairs and calls the host `ovs-vsctl` client to attach interfaces to `br-int` with `external_ids:iface-id` for OVN port binding.
-   - Concurrently scrapes guest `dcgm-exporter` endpoints over local IPv4 with strict per-target timeouts and fault isolation.
-   - Preserves all default `dcgm-exporter` labels while enriching metrics with authoritative hypervisor dimensions (`host`, `vm_id`, `vm_name`, `project_id`).
-   - Injects operational health metrics (`dcgm_collector_scrape_success`, scrape latency, target counts) into `/metrics`.
+   - Idempotently provisions persistent veth pairs, isolates Host Network Endpoints into dedicated Tenant Network Namespaces (`dcgm-<short-id>`) to prevent route collisions across overlapping tenant subnets, and attaches OVS Peer Interfaces to `br-int` with `external_ids:iface-id` for OVN port binding.
+   - Concurrently scrapes Guest Exporters over local IPv4 directly within each target's Tenant Network Namespace with strict per-target timeouts, per-netns connection pooling, and fault isolation.
+   - Preserves all default Guest Exporter metric labels while applying Metric Enrichment with authoritative Hypervisor Metadata (`host`, `vm_id`, `vm_name`, `project_id`).
+   - Injects operational Collector Metrics (`dcgm_collector_scrape_success`, scrape latency, target counts) into `/metrics`.
 
 ---
 
 ## Key Features
 
-- **Zero Host GPU Overhead**: The compute host does not run NVIDIA drivers or DCGM. All GPU hardware communication happens inside the guest VM.
-- **Compute-Initiated mTLS**: Compute nodes initiate synchronization with the control node. The control node identifies hosts via client certificate `CN`, preventing spoofing.
-- **Direct `ovs-vsctl` CLI Integration**: Reconciles `br-int` ports directly using host `ovs-vsctl` commands without requiring raw OVSDB socket mounts.
-- **Flexible Flavor Detection**: Discovers GPU workloads if flavor extra specs define `family: gpu` or `pci_passthrough:alias` with any GPU model name (e.g. `RTX4090:1`, `A100:1`, `H100:1`).
-- **Fault Isolation**: A slow, restarting, or failing guest VM exporter does not block or degrade scrapes for other VMs on the compute host.
-- **Full Metric Compatibility**: Preserves all standard `dcgm-exporter` labels (`DCGM_FI_DRIVER_VERSION`, `UUID`, `hostname`, `modelName`, `pci_bus_id`, `device`, `gpu`).
+- **Zero Host GPU Overhead**: The Compute Host does not run NVIDIA drivers or DCGM. All GPU hardware communication happens inside the guest VM.
+- **Compute-Initiated mTLS Host Sync**: Compute Hosts initiate Host Sync with the Control Service. The Control Service identifies hosts via client certificate `CN`, preventing spoofing.
+- **Isolated Tenant Network Namespaces**: Each tenant network host interface is isolated inside `dcgm-<short-id>` on the Compute Host. Overlapping tenant CIDRs never collide in the host root routing table.
+- **Direct `ovs-vsctl` CLI Integration**: Reconciles OVS Peer Interfaces on `br-int` directly using host `ovs-vsctl` commands without requiring raw OVSDB socket mounts.
+- **Flexible Flavor Detection**: Discovers Target VMs if flavor extra specs define `family: gpu` or `pci_passthrough:alias` with any GPU model name (e.g. `RTX4090:1`, `A100:1`, `H100:1`).
+- **Fault Isolation**: A slow, restarting, or failing Guest Exporter does not block or degrade scrapes for other Target VMs on the Compute Host.
+- **Full Metric Compatibility**: Preserves all standard `dcgm-exporter` labels (`DCGM_FI_DRIVER_VERSION`, `UUID`, `hostname`, `modelName`, `pci_bus_id`, `device`, `gpu`) alongside injected Hypervisor Metadata.
+
+
 
 ---
 
@@ -171,9 +177,10 @@ Example [`config.control.sample.json`](file:///run/media/sukkaito/Data/Code/gola
 }
 ```
 
-### 2. Compute Node (`dcgm-compute-agent`)
+### 2. Compute Host (`dcgm-compute-agent`)
 
 Example [`config.sample.json`](file:///run/media/sukkaito/Data/Code/golang/dcgm-exporter-collector/config.sample.json):
+
 ```json
 {
   "controller_url": "https://control-node.internal:8443",
@@ -230,9 +237,10 @@ Refer to [Control Node Service Guide](file:///run/media/sukkaito/Data/Code/golan
 
 ---
 
-### Step 2: Deploy Compute Agent on Compute Nodes
+### Step 2: Deploy Compute Agent on Compute Hosts
 
 1. Install binary and client certificates:
+
    ```bash
    cp bin/dcgm-compute-agent /usr/local/bin/
    mkdir -p /etc/dcgm-compute-agent/certs
@@ -242,7 +250,7 @@ Refer to [Control Node Service Guide](file:///run/media/sukkaito/Data/Code/golan
 2. Create systemd unit `/etc/systemd/system/dcgm-compute-agent.service`:
    ```ini
    [Unit]
-   Description=DCGM Exporter Compute Collector Agent
+   Description=DCGM Exporter Compute Agent
    After=network.target openvswitch-switch.service
    Wants=network.target
 
@@ -274,10 +282,11 @@ Refer to [Compute Node Agent Guide](file:///run/media/sukkaito/Data/Code/golang/
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/metrics` | `GET` | Aggregated, enriched Prometheus metrics across all GPU passthrough VMs |
+| `/metrics` | `GET` | Aggregated Prometheus metrics across all Target VMs enriched with Hypervisor Metadata, plus Collector Metrics |
 | `/healthz` | `GET` | Process liveness check (`200 OK`) |
 | `/readyz` | `GET` | Process readiness check (`200 READY`) |
-| `/status` | `GET` | JSON report of collector state, total/healthy targets, and per-target scrape latency |
+| `/status` | `GET` | JSON report of collector state, total/healthy Scrape Targets, and per-target scrape latency |
+
 
 ---
 

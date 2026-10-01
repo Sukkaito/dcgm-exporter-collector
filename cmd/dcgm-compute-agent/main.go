@@ -40,7 +40,8 @@ func main() {
 	cmdRunner := network.NewExecCommandRunner(10 * time.Second)
 	vethMgr := network.NewVethManager(cmdRunner)
 	ovsMgr := network.NewOVSManager(cmdRunner, cfg.OVSVsctlPath, cfg.OVSBridge)
-	netMgr := network.NewNetworkManager(vethMgr, ovsMgr, cfg.OVSBridge)
+	netnsMgr := network.NewNetNSManager(cmdRunner)
+	netMgr := network.NewNetworkManager(vethMgr, ovsMgr, cfg.OVSBridge, netnsMgr)
 
 	// 2. Initialize In-Memory Coordinator & Control-Node Client
 	coordCfg := coordinator.Config{

@@ -120,16 +120,21 @@ func (c *GophercloudClient) DiscoverComputeVMs(ctx context.Context, computeHost 
 		}
 
 		guestIP := ""
+		networkID := ""
+		var networkIDs []string
 		for _, p := range serverPorts {
-			for _, fip := range p.FixedIPs {
-				parsed := net.ParseIP(fip.IPAddress)
-				if parsed != nil && parsed.To4() != nil {
-					guestIP = fip.IPAddress
-					break
-				}
+			if p.NetworkID != "" {
+				networkIDs = append(networkIDs, p.NetworkID)
 			}
-			if guestIP != "" {
-				break
+			if guestIP == "" {
+				for _, fip := range p.FixedIPs {
+					parsed := net.ParseIP(fip.IPAddress)
+					if parsed != nil && parsed.To4() != nil {
+						guestIP = fip.IPAddress
+						networkID = p.NetworkID
+						break
+					}
+				}
 			}
 		}
 
@@ -138,12 +143,24 @@ func (c *GophercloudClient) DiscoverComputeVMs(ctx context.Context, computeHost 
 			continue
 		}
 
+		netnsName := ""
+		if networkID != "" {
+			shortID := networkID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			netnsName = fmt.Sprintf("dcgm-%s", shortID)
+		}
+
 		targets = append(targets, api.TargetVM{
-			VMID:      s.ID,
-			VMName:    s.Name,
-			ProjectID: s.TenantID,
-			GuestIP:   guestIP,
-			Port:      9400,
+			VMID:       s.ID,
+			VMName:     s.Name,
+			ProjectID:  s.TenantID,
+			NetworkID:  networkID,
+			NetworkIDs: networkIDs,
+			GuestIP:    guestIP,
+			Port:       9400,
+			NetNS:      netnsName,
 		})
 	}
 
@@ -212,10 +229,12 @@ func (c *GophercloudClient) matchesExtraSpecs(specs map[string]string) bool {
 
 // EnsureHostPorts guarantees that a persistent host-side Neutron port exists for each network on the compute host.
 func (c *GophercloudClient) EnsureHostPorts(ctx context.Context, computeHost string, networkIDs []string) ([]api.HostNetworkEndpoint, error) {
+	slog.Debug("Ensuring host ports", "compute_host", computeHost, "network_count", len(networkIDs), "networks", networkIDs)
 	var endpoints []api.HostNetworkEndpoint
 
 	for _, netID := range networkIDs {
 		if netID == "" {
+			slog.Debug("Skipping empty network ID")
 			continue
 		}
 
@@ -224,18 +243,23 @@ func (c *GophercloudClient) EnsureHostPorts(ctx context.Context, computeHost str
 			shortNetID = shortNetID[:8]
 		}
 		portName := fmt.Sprintf("dcgm-%s-%s", computeHost, shortNetID)
-		vethName := fmt.Sprintf("host-net-%s", shortNetID)
+		vethName := fmt.Sprintf("net%s", shortNetID)
+
+		slog.Debug("Processing network for host port", "network_id", netID, "port_name", portName, "veth_name", vethName)
 
 		// 1. Search for existing persistent port
 		existingPort, err := c.findPortByNameAndHost(ctx, portName, computeHost)
 		if err != nil {
+			slog.Debug("Error searching for existing port", "port_name", portName, "error", err)
 			return nil, fmt.Errorf("searching port %s: %w", portName, err)
 		}
 
 		var port *ports.Port
 		if existingPort != nil {
+			slog.Debug("Found existing persistent host port", "port_name", portName, "port_id", existingPort.ID)
 			port = existingPort
 		} else {
+			slog.Debug("Creating new persistent host port", "port_name", portName, "network_id", netID, "compute_host", computeHost)
 			// 2. Create new persistent host port bound to compute host
 			adminUp := true
 			baseOpts := ports.CreateOpts{
@@ -251,6 +275,7 @@ func (c *GophercloudClient) EnsureHostPorts(ctx context.Context, computeHost str
 
 			created, err := ports.Create(ctx, c.networkClient, bindOpts).Extract()
 			if err != nil {
+				slog.Debug("Failed creating host port", "port_name", portName, "network_id", netID, "error", err)
 				return nil, fmt.Errorf("creating host port %s on network %s: %w", portName, netID, err)
 			}
 			port = created
@@ -259,16 +284,20 @@ func (c *GophercloudClient) EnsureHostPorts(ctx context.Context, computeHost str
 
 		// 3. Format CIDR IP address
 		ipWithCIDR := c.formatPortIPWithCIDR(ctx, port)
+		slog.Debug("Formatted port IP with CIDR", "port_id", port.ID, "ip_cidr", ipWithCIDR)
 
+		netnsName := fmt.Sprintf("dcgm-%s", shortNetID)
 		endpoints = append(endpoints, api.HostNetworkEndpoint{
 			NetworkID: netID,
 			PortID:    port.ID,
 			MAC:       port.MACAddress,
 			IP:        ipWithCIDR,
 			VethName:  vethName,
+			NetNS:     netnsName,
 		})
 	}
 
+	slog.Debug("Finished ensuring host ports", "compute_host", computeHost, "endpoint_count", len(endpoints))
 	return endpoints, nil
 }
 
