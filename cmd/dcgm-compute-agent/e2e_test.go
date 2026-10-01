@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -55,7 +56,7 @@ func TestEndToEndCollectorStack(t *testing.T) {
 		resp := api.SyncResponse{
 			Status: "ok",
 			Endpoints: []api.HostNetworkEndpoint{
-				{NetworkID: "net-a", PortID: "port-a", MAC: "fa:16:3e:00:11:22", IP: "10.0.0.254/24", VethName: "host-net-a"},
+				{NetworkID: "net-a", PortID: "port-a", MAC: "fa:16:3e:00:11:22", IP: "10.0.0.254/24", VethName: "neta"},
 			},
 			Targets: []api.TargetVM{
 				{VMID: "vm-uuid-1", VMName: "worker-gpu-1", ProjectID: "proj-1", GuestIP: ip1, Port: port1},
@@ -134,5 +135,81 @@ func TestEndToEndCollectorStack(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&status)
 	if status.TotalTargets != 2 || status.HealthyTargets != 2 {
 		t.Errorf("expected 2 healthy targets, got %+v", status)
+	}
+}
+
+type testNetNSDialer struct {
+	targetURL string
+	dialedNS  map[string]bool
+}
+
+func (d *testNetNSDialer) DialContext(ctx context.Context, netns, network, address string) (net.Conn, error) {
+	d.dialedNS[netns] = true
+	var dialer net.Dialer
+	serverAddr := strings.TrimPrefix(d.targetURL, "http://")
+	return dialer.DialContext(ctx, network, serverAddr)
+}
+
+func TestEndToEndCollectorStack_WithNetNS(t *testing.T) {
+	guest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("# HELP DCGM_FI_DEV_GPU_UTIL GPU utilization (in %).\n# TYPE DCGM_FI_DEV_GPU_UTIL gauge\nDCGM_FI_DEV_GPU_UTIL{gpu=\"0\",UUID=\"GPU-NETNS\"} 88\n"))
+	}))
+	defer guest.Close()
+
+	ip, port := parseHostAndPort(guest.URL)
+
+	ctrl := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := api.SyncResponse{
+			Status: "ok",
+			Endpoints: []api.HostNetworkEndpoint{
+				{NetworkID: "net-tenant-1", PortID: "port-1", MAC: "fa:16:3e:00:11:22", IP: "10.0.0.254/24", VethName: "nettenant1", NetNS: "dcgm-net-tena"},
+			},
+			Targets: []api.TargetVM{
+				{VMID: "vm-ns-1", VMName: "worker-ns-1", ProjectID: "proj-ns", NetworkID: "net-tenant-1", GuestIP: ip, Port: port, NetNS: "dcgm-net-tena"},
+			},
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer ctrl.Close()
+
+	coordCfg := coordinator.Config{
+		ControllerURL: ctrl.URL,
+		HostName:      "compute-node-ns",
+		SyncTimeout:   2 * time.Second,
+	}
+	coord, err := coordinator.NewCoordinator(coordCfg, nil)
+	if err != nil {
+		t.Fatalf("failed to create coordinator: %v", err)
+	}
+
+	dialer := &testNetNSDialer{
+		targetURL: guest.URL,
+		dialedNS:  make(map[string]bool),
+	}
+	tr := transport.NewHTTPTransport(2*time.Second, 1024*1024, dialer)
+	sc := scraper.NewScraper(tr, 2*time.Second)
+	enricher := processor.NewMetricEnricher("compute-node-ns")
+	srv := server.NewServer(":0", coord, sc, enricher, 50*time.Millisecond)
+
+	if err := coord.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	testServer := httptest.NewServer(srv.Handler())
+	defer testServer.Close()
+
+	resp, err := http.Get(fmt.Sprintf("%s/metrics", testServer.URL))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics failed: %v, status: %d", err, resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	metricsOutput := string(body)
+
+	if !strings.Contains(metricsOutput, "vm_id=\"vm-ns-1\"") {
+		t.Errorf("metrics missing vm-ns-1: %s", metricsOutput)
+	}
+	if !dialer.dialedNS["dcgm-net-tena"] {
+		t.Errorf("expected dial inside dcgm-net-tena, recorded dials: %+v", dialer.dialedNS)
 	}
 }

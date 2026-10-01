@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -105,5 +106,72 @@ func TestServer_Endpoints(t *testing.T) {
 	}
 	if status.TotalTargets != 1 || status.HealthyTargets != 1 {
 		t.Errorf("unexpected status numbers: %+v", status)
+	}
+}
+
+func TestServer_StatusPrunesDeletedTargets(t *testing.T) {
+	ts1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("# HELP dcgm test\nDCGM_FI_DEV_GPU_UTIL{gpu=\"0\"} 50\n"))
+	}))
+	defer ts1.Close()
+
+	ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("# HELP dcgm test\nDCGM_FI_DEV_GPU_UTIL{gpu=\"0\"} 75\n"))
+	}))
+	defer ts2.Close()
+
+	parts1 := strings.Split(strings.TrimPrefix(ts1.URL, "http://"), ":")
+	p1, _ := strconv.Atoi(parts1[1])
+	parts2 := strings.Split(strings.TrimPrefix(ts2.URL, "http://"), ":")
+	p2, _ := strconv.Atoi(parts2[1])
+
+	initialTargets := []api.TargetVM{
+		{VMID: "test-vm-1", VMName: "inst-1", GuestIP: parts1[0], Port: p1},
+		{VMID: "test-vm-2", VMName: "inst-2", GuestIP: parts2[0], Port: p2},
+	}
+
+	coord, err := coordinator.NewCoordinator(coordinator.Config{
+		StaticTargets: initialTargets,
+	}, nil)
+	if err != nil {
+		t.Fatalf("failed to create coordinator: %v", err)
+	}
+
+	tr := transport.NewHTTPTransport(time.Second, 1024*1024)
+	sc := scraper.NewScraper(tr, time.Second)
+	enricher := processor.NewMetricEnricher("hgx087")
+	srv := NewServer(":0", coord, sc, enricher, 100*time.Millisecond)
+
+	// Scrape metrics initially to populate exporterStatus
+	w := httptest.NewRecorder()
+	srv.handleMetrics(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	// Status should have 2 targets
+	w = httptest.NewRecorder()
+	srv.handleStatus(w, httptest.NewRequest(http.MethodGet, "/status", nil))
+	var status api.CollectorStatus
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to decode status: %v", err)
+	}
+	if status.TotalTargets != 2 {
+		t.Fatalf("expected 2 targets initially, got %d", status.TotalTargets)
+	}
+
+	// Simulate VM deletion: coordinator target list updated with only test-vm-1
+	coord.SetTargets([]api.TargetVM{initialTargets[0]})
+
+	// Query /status: test-vm-2 must be pruned immediately without needing another /metrics scrape
+	w = httptest.NewRecorder()
+	srv.handleStatus(w, httptest.NewRequest(http.MethodGet, "/status", nil))
+	if err := json.Unmarshal(w.Body.Bytes(), &status); err != nil {
+		t.Fatalf("failed to decode status: %v", err)
+	}
+	if status.TotalTargets != 1 {
+		t.Fatalf("expected 1 target after deletion, got %d", status.TotalTargets)
+	}
+	if status.Exporters[0].VMID != "test-vm-1" {
+		t.Errorf("expected test-vm-1, got %s", status.Exporters[0].VMID)
 	}
 }

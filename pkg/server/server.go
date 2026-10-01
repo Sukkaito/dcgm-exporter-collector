@@ -99,6 +99,10 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if s.coordinator != nil {
+		activeTargets := s.coordinator.GetTargets()
+		s.scraper.PruneTargets(activeTargets)
+	}
 	status := s.scraper.GetStatus()
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)

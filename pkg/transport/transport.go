@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/Sukkaito/dcgm-exporter-collector/pkg/api"
@@ -16,14 +17,17 @@ type TelemetryTransport interface {
 	GetMetrics(ctx context.Context, target api.TargetVM) ([]byte, error)
 }
 
-// HTTPTransport implements TelemetryTransport over IPv4 HTTP.
+// HTTPTransport implements TelemetryTransport over IPv4 HTTP with per-netns connection pooling.
 type HTTPTransport struct {
-	client       *http.Client
+	mu           sync.RWMutex
+	clients      map[string]*http.Client // key: netns ("" for default root namespace)
+	dialer       NetNSDialer
+	timeout      time.Duration
 	maxBytesRead int64
 }
 
-// NewHTTPTransport creates an HTTP transport with custom timeouts and connection pooling.
-func NewHTTPTransport(timeout time.Duration, maxBytesRead int64) *HTTPTransport {
+// NewHTTPTransport creates an HTTP transport with custom timeouts, connection pooling, and netns support.
+func NewHTTPTransport(timeout time.Duration, maxBytesRead int64, dialers ...NetNSDialer) *HTTPTransport {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
@@ -31,28 +35,55 @@ func NewHTTPTransport(timeout time.Duration, maxBytesRead int64) *HTTPTransport 
 		maxBytesRead = 10 * 1024 * 1024 // 10MB limit
 	}
 
-	dialer := &net.Dialer{
-		Timeout:   timeout,
-		KeepAlive: 30 * time.Second,
+	var d NetNSDialer
+	if len(dialers) > 0 && dialers[0] != nil {
+		d = dialers[0]
+	} else {
+		d = NewDefaultNetNSDialer(timeout, 30*time.Second)
 	}
 
+	return &HTTPTransport{
+		clients:      make(map[string]*http.Client),
+		dialer:       d,
+		timeout:      timeout,
+		maxBytesRead: maxBytesRead,
+	}
+}
+
+func (t *HTTPTransport) getClient(netns string) *http.Client {
+	t.mu.RLock()
+	c, ok := t.clients[netns]
+	t.mu.RUnlock()
+	if ok {
+		return c
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if c, ok = t.clients[netns]; ok {
+		return c
+	}
+
+	targetNS := netns
 	tr := &http.Transport{
-		DialContext:         dialer.DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return t.dialer.DialContext(ctx, targetNS, network, addr)
+		},
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 10,
 		IdleConnTimeout:     90 * time.Second,
 	}
 
-	return &HTTPTransport{
-		client: &http.Client{
-			Transport: tr,
-			Timeout:   timeout,
-		},
-		maxBytesRead: maxBytesRead,
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   t.timeout,
 	}
+
+	t.clients[netns] = client
+	return client
 }
 
-// GetMetrics scrapes the Prometheus endpoint of the specified target VM.
+// GetMetrics scrapes the Prometheus endpoint of the specified target VM within its designated network namespace.
 func (t *HTTPTransport) GetMetrics(ctx context.Context, target api.TargetVM) ([]byte, error) {
 	port := target.Port
 	if port <= 0 {
@@ -66,9 +97,10 @@ func (t *HTTPTransport) GetMetrics(ctx context.Context, target api.TargetVM) ([]
 	}
 	req.Header.Set("User-Agent", "dcgm-compute-collector")
 
-	resp, err := t.client.Do(req)
+	client := t.getClient(target.NetNS)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("scraping %s: %w", url, err)
+		return nil, fmt.Errorf("scraping %s (netns: %s): %w", url, target.NetNS, err)
 	}
 	defer resp.Body.Close()
 

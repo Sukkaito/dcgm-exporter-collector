@@ -103,8 +103,11 @@ func buildHTTPClient(cfg Config) (*http.Client, error) {
 
 // SyncOnce performs a single synchronization request to the control node.
 func (c *Coordinator) SyncOnce(ctx context.Context) error {
+	slog.Info("Starting sync attempt", "controller", c.cfg.ControllerURL, "hostname", c.cfg.HostName)
+
 	if c.cfg.ControllerURL == "" {
 		// No controller URL provided, keep using static targets
+		slog.Info("No controller URL configured, using static targets", "count", len(c.cfg.StaticTargets))
 		c.mu.Lock()
 		c.lastSync = time.Now()
 		c.lastError = nil
@@ -118,18 +121,22 @@ func (c *Coordinator) SyncOnce(ctx context.Context) error {
 	}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
+		slog.Error("Failed to marshal sync request", "error", err)
 		return fmt.Errorf("marshaling sync request: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/api/v1/host/sync", c.cfg.ControllerURL)
+	slog.Info("Sending sync request to controller", "url", url, "hostname", c.cfg.HostName)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyBytes))
 	if err != nil {
+		slog.Error("Failed to build sync request HTTP object", "url", url, "error", err)
 		return fmt.Errorf("building sync request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		slog.Error("Sync HTTP request failed", "url", url, "error", err)
 		c.recordSyncError(err)
 		return fmt.Errorf("performing sync with %s: %w", url, err)
 	}
@@ -137,26 +144,46 @@ func (c *Coordinator) SyncOnce(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("sync returned HTTP status %d", resp.StatusCode)
+		slog.Error("Sync request failed with non-200 status", "status", resp.StatusCode, "url", url)
 		c.recordSyncError(err)
 		return err
 	}
 
+	slog.Info("Received sync response", "status", resp.StatusCode)
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
+		slog.Error("Failed to read sync response body", "error", err)
 		c.recordSyncError(err)
 		return fmt.Errorf("reading sync response: %w", err)
 	}
 
 	var syncResp api.SyncResponse
 	if err := json.Unmarshal(respBytes, &syncResp); err != nil {
+		slog.Error("Failed to unmarshal sync response", "error", err)
 		c.recordSyncError(err)
 		return fmt.Errorf("unmarshaling sync response: %w", err)
 	}
 
+	for i := range syncResp.Targets {
+		if syncResp.Targets[i].NetNS == "" && syncResp.Targets[i].NetworkID != "" {
+			shortID := syncResp.Targets[i].NetworkID
+			if len(shortID) > 8 {
+				shortID = shortID[:8]
+			}
+			syncResp.Targets[i].NetNS = fmt.Sprintf("dcgm-%s", shortID)
+		}
+	}
+
+	slog.Info("Parsed sync response", "status", syncResp.Status, "endpoints", len(syncResp.Endpoints), "targets", len(syncResp.Targets))
+
 	// Reconcile network endpoints if network manager is configured
-	if c.networkManager != nil && len(syncResp.Endpoints) > 0 {
+	if c.networkManager != nil {
+		slog.Info("Reconciling network endpoints", "count", len(syncResp.Endpoints))
+		slog.Debug(fmt.Sprintf("%#v", syncResp))
 		if err := c.networkManager.ReconcileEndpoints(ctx, syncResp.Endpoints); err != nil {
 			slog.Warn("Network reconciliation warning", "error", err)
+		} else {
+			slog.Info("Network reconciliation complete")
 		}
 	}
 
@@ -206,6 +233,13 @@ func (c *Coordinator) GetTargets() []api.TargetVM {
 	result := make([]api.TargetVM, len(c.targets))
 	copy(result, c.targets)
 	return result
+}
+
+// SetTargets updates the active target list (useful for dynamic testing).
+func (c *Coordinator) SetTargets(targets []api.TargetVM) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.targets = targets
 }
 
 // GetSyncStatus returns the last sync timestamp and error if any.

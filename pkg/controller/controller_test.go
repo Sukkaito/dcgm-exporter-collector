@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -166,5 +167,74 @@ func TestController_mTLSEndToEnd(t *testing.T) {
 	}
 	if len(syncResp.Targets) != 1 || syncResp.Targets[0].VMID != "vm-mtls" {
 		t.Errorf("expected target vm-mtls, got: %+v", syncResp.Targets)
+	}
+}
+
+func TestController_HandleSync_CollectsUniqueNetworks(t *testing.T) {
+	mockOS := openstack.NewMockOpenStackClient()
+	mockOS.VMsByHost["hgx087"] = []api.TargetVM{
+		{VMID: "vm-1", VMName: "vm-gpu-1", NetworkID: "net-alpha", GuestIP: "10.0.1.10", Port: 9400},
+		{VMID: "vm-2", VMName: "vm-gpu-2", NetworkID: "net-beta", GuestIP: "10.0.2.20", Port: 9400},
+		{VMID: "vm-3", VMName: "vm-gpu-3", NetworkID: "net-alpha", GuestIP: "10.0.1.30", Port: 9400},
+		{VMID: "vm-4", VMName: "vm-gpu-4", NetworkIDs: []string{"net-gamma"}, GuestIP: "10.0.3.40", Port: 9400},
+	}
+
+	handler := NewHandler(mockOS)
+	handler.SetAllowInsecureTLS(true)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/sync", bytes.NewReader([]byte(`{"action":"sync"}`)))
+	req.Header.Set("X-Compute-Host", "hgx087")
+	w := httptest.NewRecorder()
+	handler.HandleSync(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp api.SyncResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed decoding sync response: %v", err)
+	}
+
+	if len(resp.Targets) != 4 {
+		t.Fatalf("expected 4 targets, got %d", len(resp.Targets))
+	}
+
+	// Should have deduplicated to net-alpha, net-beta, net-gamma
+	if len(resp.Endpoints) != 3 {
+		t.Fatalf("expected 3 endpoints, got %d: %+v", len(resp.Endpoints), resp.Endpoints)
+	}
+
+	expectedNets := map[string]bool{
+		"net-alpha": false,
+		"net-beta":  false,
+		"net-gamma": false,
+	}
+	for _, ep := range resp.Endpoints {
+		if _, ok := expectedNets[ep.NetworkID]; !ok {
+			t.Errorf("unexpected endpoint network: %s", ep.NetworkID)
+		}
+		expectedNets[ep.NetworkID] = true
+	}
+	for netID, found := range expectedNets {
+		if !found {
+			t.Errorf("missing expected endpoint network: %s", netID)
+		}
+	}
+
+	for _, ep := range resp.Endpoints {
+		expectedNS := fmt.Sprintf("dcgm-%s", ep.NetworkID[:8])
+		if ep.NetNS != expectedNS {
+			t.Errorf("expected endpoint netns %s, got %s", expectedNS, ep.NetNS)
+		}
+	}
+
+	for _, target := range resp.Targets {
+		if target.NetworkID != "" {
+			expectedNS := fmt.Sprintf("dcgm-%s", target.NetworkID[:8])
+			if target.NetNS != expectedNS {
+				t.Errorf("expected target %s netns %s, got %s", target.VMID, expectedNS, target.NetNS)
+			}
+		}
 	}
 }

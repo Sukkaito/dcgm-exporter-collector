@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -63,6 +64,8 @@ func (s *Scraper) ScrapeTarget(ctx context.Context, target api.TargetVM) ScrapeR
 
 // ScrapeAll scrapes all provided targets using a bounded worker pool and updates internal health status.
 func (s *Scraper) ScrapeAll(ctx context.Context, targets []api.TargetVM) map[string]ScrapeResult {
+	s.PruneTargets(targets)
+
 	results := make(map[string]ScrapeResult, len(targets))
 	if len(targets) == 0 {
 		return results
@@ -149,6 +152,23 @@ func (s *Scraper) recordStatus(res ScrapeResult) {
 	s.exporterStatus[res.Target.VMID] = status
 }
 
+// PruneTargets removes status entries for any target not present in the provided active targets list.
+func (s *Scraper) PruneTargets(activeTargets []api.TargetVM) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	activeIDs := make(map[string]struct{}, len(activeTargets))
+	for _, t := range activeTargets {
+		activeIDs[t.VMID] = struct{}{}
+	}
+
+	for id := range s.exporterStatus {
+		if _, exists := activeIDs[id]; !exists {
+			delete(s.exporterStatus, id)
+		}
+	}
+}
+
 // GetStatus returns the current health report of all known exporters.
 func (s *Scraper) GetStatus() api.CollectorStatus {
 	s.mu.RLock()
@@ -163,6 +183,10 @@ func (s *Scraper) GetStatus() api.CollectorStatus {
 			healthyCount++
 		}
 	}
+
+	sort.Slice(exporters, func(i, j int) bool {
+		return exporters[i].VMID < exporters[j].VMID
+	})
 
 	collectorState := "healthy"
 	if len(exporters) > 0 && healthyCount == 0 {

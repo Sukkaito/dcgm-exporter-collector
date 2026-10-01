@@ -1,28 +1,30 @@
-# Control-Node Collector Service Deployment Guide
+# Control Service Deployment Guide
 
-This guide describes how to configure, deploy, and verify the `dcgm-control-service` on OpenStack control nodes deployed via Kolla-Ansible.
+This guide describes how to configure, deploy, and verify the Control Service (`dcgm-control-service`) on OpenStack control nodes deployed via Kolla-Ansible.
 
 ---
 
 ## 1. Overview
 
-`dcgm-control-service` runs on an OpenStack control node and handles synchronization requests from `dcgm-compute-agent` daemons running across compute hosts.
+The **Control Service** (`dcgm-control-service`) runs on an OpenStack control node and handles **Host Sync** requests from **Compute Agent** (`dcgm-compute-agent`) daemons running across compute hosts.
 
 Key responsibilities:
-1. **Compute Authentication via mTLS**: Validates compute client certificates against a trusted CA and extracts the compute hostname directly from the certificate Subject Common Name (`CN`).
-2. **GPU Passthrough VM Discovery**: Queries Nova for active servers on the requesting compute host and inspects flavor extra specs (`pci_passthrough:alias`) to identify instances with assigned GPUs.
-3. **Neutron Host Port Provisioning**: Automatically discovers the Neutron tenant networks used by those VMs, ensures a persistent host-side Neutron port exists for each network bound to the compute host (`binding:host_id`), and returns the allocated IP and MAC addresses.
-4. **Target Synchronization**: Returns desired network endpoints and VM scrape targets to the compute agent.
+1. **Compute Authentication via mTLS**: Validates client certificates against a trusted CA and extracts the Compute Host hostname directly from the certificate Subject Common Name (`CN`).
+2. **Target VM Discovery**: Queries Nova for active servers on the requesting Compute Host and inspects flavor extra specs (`pci_passthrough:alias`) to identify Target VMs with assigned GPUs. (Virtual machines created directly on the hypervisor outside Nova are not Target VMs and are ignored).
+3. **Host Network Endpoint Provisioning**: Discovers the tenant networks used by those Target VMs, ensures a persistent Host Network Endpoint (Neutron port) exists for each network bound to the Compute Host (`binding:host_id`), and returns the allocated IP, MAC, and veth details.
+4. **Host Sync**: Returns desired Host Network Endpoints and Target VMs to the Compute Agent.
+
 
 ```text
                             COMPUTE HOST (hgx087)
                                     |
-                           POST /api/v1/host/sync
+                           POST /api/v1/host/sync (Host Sync)
                      (Client Cert: CN=hgx087)
                                     |
                                     v
                      +----------------------------+
-                     |    dcgm-control-service    |
+                     |       Control Service      |
+                     |    (dcgm-control-service)  |
                      |  (:8443, mTLS Enforced)    |
                      +--------------+-------------+
                                     |
@@ -30,8 +32,8 @@ Key responsibilities:
             |                                               |
             v                                               v
     Nova API (Keystone Auth)                     Neutron API (Keystone Auth)
-- List servers where host=hgx087              - Query VM port fixed IPs
-- Inspect flavor extra_specs                  - Find or create persistent host port
+- List servers where host=hgx087              - Query Target VM port fixed IPs
+- Inspect flavor extra_specs                  - Find or create Host Network Endpoint
   (pci_passthrough:alias: gpu)                  (binding:host_id = hgx087)
 ```
 
@@ -39,7 +41,7 @@ Key responsibilities:
 
 ## 2. OpenStack Credentials & Kolla-Ansible Environment
 
-The control service requires OpenStack administrative credentials to query Nova and create Neutron ports.
+The Control Service requires OpenStack administrative credentials to query Nova and create Neutron ports for Host Network Endpoints.
 
 In a Kolla-Ansible deployment, these credentials are generated in `/etc/kolla/admin-openrc.sh`:
 ```bash
@@ -60,13 +62,15 @@ The service supports both environment variables and a JSON configuration file:
 
 ---
 
-## 3. GPU Passthrough Detection
+## 3. Target VM Discovery
 
-To determine which VMs on the compute host have GPU passthrough, the service inspects the flavor extra specs of each active VM.
+To discover Target VMs on the Compute Host, the Control Service inspects the flavor extra specs of each active Nova server. Only Nova-managed servers can be Target VMs; virtual machines provisioned directly on the hypervisor outside Nova are not Target VMs and are never discovered or scraped.
 
-An instance is identified as a GPU workload if either condition is met:
+A Nova server is identified as a Target VM if either condition is met:
 1. **Flavor Family**: The extra spec `family` equals `gpu` (case-insensitive).
 2. **PCI Alias Key**: The extra spec `pci_passthrough:alias` exists and is non-empty, regardless of the GPU model name (e.g., `RTX4090:1`, `A100:1`, `H100:1`, `L40S:1`).
+
+
 
 Configuration settings:
 - **`extra_specs_key`** (default `pci_passthrough:alias`): The flavor extra spec key to inspect.
@@ -95,9 +99,9 @@ chmod 644 /etc/dcgm-control-service/certs/server.crt
 chmod 600 /etc/dcgm-control-service/certs/server.key
 ```
 
-### 4.2 Issuing Client Certificates for Compute Nodes
+### 4.2 Issuing Client Certificates for Compute Hosts
 
-When adding a new compute host (e.g., `hgx087`):
+When adding a new Compute Host (e.g., `hgx087`):
 ```bash
 openssl req -newkey rsa:2048 -nodes \
   -keyout hgx087.key -out hgx087.csr \
@@ -106,7 +110,8 @@ openssl req -newkey rsa:2048 -nodes \
 openssl x509 -req -in hgx087.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
   -out hgx087.crt -days 365 -sha256
 ```
-Distribute `ca.crt`, `hgx087.crt`, and `hgx087.key` to the compute host.
+Distribute `ca.crt`, `hgx087.crt`, and `hgx087.key` to the Compute Host.
+
 
 ---
 
@@ -162,6 +167,7 @@ Sample configuration `/etc/dcgm-control-service/control.json`:
    WantedBy=multi-user.target
    ```
 
+
 3. Enable and start:
    ```bash
    systemctl daemon-reload
@@ -207,8 +213,8 @@ curl -k https://localhost:8443/readyz
 # Expected: READY (verifies OpenStack connectivity)
 ```
 
-### 7.2 Testing mTLS Host Synchronization
-Simulate a request from compute node `hgx087` using its client certificate:
+### 7.2 Testing mTLS Host Sync
+Simulate a request from Compute Host `hgx087` using its client certificate:
 ```bash
 curl --cacert /etc/dcgm-control-service/certs/ca.crt \
      --cert /path/to/hgx087.crt \
@@ -228,7 +234,7 @@ Example response:
       "port_id": "89ec937a-4299-4d62-a5ec-9f5b2b2b1897",
       "mac": "fa:16:3e:ab:cd:ef",
       "ip": "10.0.0.254/24",
-      "veth_name": "host-net-31464df7"
+      "veth_name": "net31464df7"
     }
   ],
   "targets": [
